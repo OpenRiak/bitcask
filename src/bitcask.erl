@@ -1,6 +1,7 @@
 %% -------------------------------------------------------------------
 %%
 %% Copyright (c) 2010-2017 Basho Technologies, Inc.
+%% Copyright (c) 2018 Workday, Inc.
 %%
 %% This file is provided to you under the Apache License,
 %% Version 2.0 (the "License"); you may not use this file
@@ -172,9 +173,17 @@ open(Dirname, Opts) ->
           %% If the lock file is not stale, we'll continue initializing
           %% and loading anyway: if later someone tries to write
           %% something, that someone will get a write_locked exception.
-          _ = bitcask_lockops:delete_stale_lock(write, Dirname),
+          case bitcask_lockops:try_write_lock_acquisition(Dirname) of
+              ok ->
+                  ok;
+              not_stale ->
+                  error_logger:error_msg(
+                      "Attempted to obtain the Bitcask write lock for '~s' but another "
+                      "Bitcask DB has the lock! Continuing but all write operations will fail.", [Dirname])
+          end,
           fresh;
-        false -> undefined
+        false ->
+            undefined
     end,
 
     %% Get the max file size parameter from opts
