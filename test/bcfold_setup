@@ -39,13 +39,8 @@ make_dir(Dir, KeySz, BinSz) ->
     BinarySize = 14 + KeySz + BinSz + 12,
     %%        1GB
     NumObjs = (1073741824 div BinarySize) + 1,
-    RandFnc = case erlang:function_exported(crypto, rand_bytes, 1) of
-        true ->
-            rand_bytes;
-        _ ->
-            strong_rand_bytes
-    end,
-    Key = crypto:RandFnc(KeySz),
-    Bin = crypto:RandFnc(BinSz),
-    [bitcask:put(Ref, <<Key/binary,X:32>>, Bin) || X <- lists:seq(1, NumObjs)],
+    Key = crypto:strong_rand_bytes(KeySz),
+    Bin = crypto:strong_rand_bytes(BinSz),
+    [bitcask:put(Ref, <<Key/binary,X:32>>, Bin) ||
+        X <- lists:seq(1, NumObjs)],
     bitcask:close(Ref).

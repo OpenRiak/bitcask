@@ -1,8 +1,6 @@
 %% -------------------------------------------------------------------
 %%
-%% bitcask: Eric Brewer-inspired key/value store
-%%
-%% Copyright (c) 2012 Basho Technologies, Inc. All Rights Reserved.
+%% Copyright (c) 2012-2014 Basho Technologies, Inc.
 %%
 %% This file is provided to you under the Apache License,
 %% Version 2.0 (the "License"); you may not use this file
@@ -24,7 +22,7 @@
 -include_lib("eunit/include/eunit.hrl").
 -include("bitcask.hrl").
 
--compile(export_all).
+-compile([export_all, nowarn_export_all]).
 
 current_tstamp() ->
     case erlang:get(meck_tstamp) of
@@ -55,7 +53,7 @@ timeshift_test_() ->
 
 timeshift_test2() ->
     try
-        Dirname = "/tmp/bc.timeshift",
+        Dirname = filename:join(?TEST_FILEPATH, "bc.timeshift"),
         meck:new(bitcask_time, [passthrough]),
         meck:expect(bitcask_time, tstamp, fun next_tstamp/0),
         set_tstamp(100),

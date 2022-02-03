@@ -19,7 +19,6 @@
 %% -------------------------------------------------------------------
 
 -module(bitcask_merge_delete).
-
 -behaviour(gen_server).
 
 %% API
@@ -30,29 +29,30 @@
          terminate/2, code_change/3]).
 
 -ifdef(TEST).
--export([
-    testonly__delete_trigger/0
-]).
+-compile([export_all, nowarn_export_all]).
 -ifdef(EQC).
 -ifdef(PULSE).
--compile({parse_transform, pulse_instrument}).
+-compile([
+    {parse_transform, pulse_instrument},
+    {pulse_side_effect, [
+        {file, '_', '_'},
+        {bitcask_nifs, '_', '_'}
+    ]}
+]).
+-include_lib("pulse_otp/include/pulse_otp.hrl").
 -endif. % PULSE
 -endif. % EQC
 -include_lib("eunit/include/eunit.hrl").
 -endif. % TEST
-
+-include_lib("kernel/include/file.hrl").
+-include_lib("kernel/include/logger.hrl").
 -include("bitcask.hrl").
 
 -define(SERVER, ?MODULE).
 -define(TIMEOUT, 1000).
+-define(TEST_DIR, filename:join(?TEST_FILEPATH, os:getpid())).
 
--ifdef(NO_NAMESPACED_TYPES).
--type merge_queue() :: queue().
--else.
--type merge_queue() :: queue:queue().
--endif.
-
--record(state, {q :: merge_queue()}).
+-record(state, {q :: queue:queue()}).
 
 %%%===================================================================
 %%% API
@@ -71,6 +71,28 @@ queue_length() ->
 -ifdef(TEST).
 testonly__delete_trigger() ->
     gen_server:call(?SERVER, {testonly__delete_trigger}, infinity).
+
+%% this is a common function to both eunit and EQC
+testonly__truncate_hint(Seed, TruncBy0) ->
+    case filelib:wildcard(?TEST_DIR ++ "/*.hint") of
+        [] ->
+            ok;
+        Hints->
+            Hint = lists:nth(1 + (abs(Seed) rem length(Hints)), Hints),
+            {ok, Fi} = file:read_file_info(Hint),
+            {ok, Fh} = file:open(Hint, [read, write]),
+            TruncBy = (1 + abs(TruncBy0)) rem (Fi#file_info.size+1),
+            {ok, _To} = file:position(Fh, {eof, erlang:max(-TruncBy, 0)}),
+            %% io:format(user, "Truncating ~p by ~p to ~p\n", [Hint, TruncBy, _To]),
+            file:truncate(Fh),
+            file:close(Fh)
+    end.
+
+testonly__create_stale_lock() ->
+    Fname = filename:join(?TEST_DIR, "bitcask.write.lock"),
+    filelib:ensure_dir(Fname),
+    ok = file:write_file(Fname, "102349430239 abcdef\n").
+
 -endif. % TEST
 
 %%%===================================================================
@@ -152,8 +174,7 @@ delete_ready_files(S, PendingQ) ->
     end.
 
 delete_files(Files) ->
-    _ = [bitcask_fileops:delete(#filestate{filename = F}) || F <- Files],
-    ok.
+    lists:foreach(fun bitcask_fileops:delete/1, Files).
 
 %%%===================================================================
 %%% EUnit Tests
@@ -164,7 +185,7 @@ multiple_merges_during_fold_test_() ->
     {timeout, 60, fun multiple_merges_during_fold_body/0}.
 
 multiple_merges_during_fold_body() ->
-    Dir = "/tmp/bc.multiple-merges-fold",
+    Dir = filename:join(?TEST_FILEPATH, "bc.multiple-merges-fold"),
     B = bitcask:open(Dir, [read_write, {max_file_size, 50}]),
     PutSome = fun() ->
                       [bitcask:put(B, <<X:32>>, <<"yo this is a value">>) ||
@@ -213,17 +234,11 @@ merge_until(Dir, MinCount, CountSetuids) ->
     end.
 
 regression_gh82_test_() ->
-    TestDir = bitcask:create_test_dir(),
-    {setup,
-        fun() -> TestDir end,
-        fun bitcask:delete_test_dir/1,
-        {timeout, 300, fun() ->
-            ?_assertEqual(ok, regression_gh82_body(TestDir))
-        end}
-    }.
+    {timeout, 300, ?_assertEqual(ok, regression_gh82_body())}.
 
-regression_gh82_body(TestDir) ->
-    Dir = filename:join(TestDir, "test"),
+regression_gh82_body() ->
+    Dir = filename:join(?TEST_FILEPATH, "bc.regression_gh82"),
+    os:cmd("rm -rf " ++ Dir),
     Reference = bitcask:open(Dir, [read_write | regression_gh82_opts()]),
     bitcask:put(Reference, <<"key_to_delete">>, <<"tr0ll">>),
     [ bitcask:put(Reference, term_to_binary(X), <<1:(8 * 1024 * 100)>>) || X <- lists:seq(1, 3000)],
@@ -257,7 +272,7 @@ change_open_regression_test_() ->
     {timeout, 300, ?_assertMatch({ok, _}, change_open_regression_body())}.
 
 change_open_regression_body() ->
-    Dir = "/tmp/bitcask.qc",
+    Dir = filename:join(?TEST_FILEPATH, "bitcask.qc"),
     os:cmd("rm -rf " ++ Dir),
     K1 = <<"K111">>,
     K2 = <<"K22222">>,
@@ -269,7 +284,7 @@ change_open_regression_body() ->
     K6_val2 = <<"K6b">>,
     K7 = <<"k">>,
     %% _V1 = apply(bitcask_qc_fsm,set_keys,[[K1,K2,K3,K4,K5,K6]]),
-    _V2 = apply(bitcask_qc_fsm,truncate_hint,[10,-14]),
+    _V2 = apply(?MODULE,testonly__truncate_hint,[10,-14]),
     _V3 = apply(bitcask,open,[Dir,[read_write,{open_timeout,0},{sync_strategy,none}]]),
     _V4 = apply(bitcask,delete,[_V3,K3]),
     _V5 = apply(bitcask,merge,[Dir]),
@@ -285,8 +300,8 @@ change_open_regression_body() ->
     _V34 = apply(bitcask,put,[_V3,K3,<<"34">>]),
     _V35 = apply(bitcask,merge,[Dir]),
     _V36 = apply(bitcask,close,[_V3]),
-    _V37 = apply(bitcask_qc_fsm,create_stale_lock,[]),
-    _V38 = apply(bitcask_qc_fsm,create_stale_lock,[]),
+    _V37 = apply(?MODULE,testonly__create_stale_lock,[]),
+    _V38 = apply(?MODULE,testonly__create_stale_lock,[]),
     _V50 = apply(bitcask,open,[Dir,[read_write,{open_timeout,0},{sync_strategy,none}]]),
     _V51 = apply(bitcask,put,[_V50,K7,<<"x51>>><">>]),
     _V52 = apply(bitcask,get,[_V50,K6]),
@@ -319,17 +334,14 @@ change_open_regression_body() ->
     end.
 
 new_20131217_a_test_() ->
-    TestDir = bitcask:create_test_dir(),
-    {setup,
-        fun() -> TestDir end,
-        fun bitcask:delete_test_dir/1,
-        {timeout, 300, fun() ->
-            ?_assertEqual(ok, new_20131217_a_body(TestDir))
-        end}
-    }.
+    {timeout, 300, ?_assertEqual(ok, new_20131217_a_body())}.
 
-new_20131217_a_body(TestDir) ->
-    TestDir = bitcask:create_test_dir(),
+%% 37> io:format("~w.\n", [C76]).
+%% [[{set,{var,1},{call,bitcask_pulse,incr_clock,[]}},{set,{var,2},{call,bitcask_pulse,bc_open,[true]}},{set,{var,3},{call,bitcask_pulse,puts,[{var,2},{1,13},<<0>>]}},{set,{var,10},{call,bitcask_pulse,delete,[{var,2},13]}},{set,{var,14},{call,bitcask_pulse,puts,[{var,2},{1,21},<<0,0,0>>]}},{set,{var,18},{call,bitcask_pulse,puts,[{var,2},{1,15},<<0,0,0>>]}},{set,{var,24},{call,bitcask_pulse,fork_merge,[{var,2}]}},{set,{var,27},{call,bitcask_pulse,bc_close,[{var,2}]}},{set,{var,28},{call,bitcask_pulse,incr_clock,[]}},{set,{var,40},{call,bitcask_pulse,fork,[[{init,{state,undefined,false,false,[]}},{set,{not_var,6},{not_call,bitcask_pulse,bc_open,[false]}},{set,{not_var,17},{not_call,bitcask_pulse,fold,[{not_var,6}]}}]]}}],{99742,1075,90258},[{events,[]}]].
+
+new_20131217_a_body() ->
+    catch token:stop(),
+    TestDir = filename:join(?TEST_FILEPATH, token:get_name()),
     bitcask_time:test__set_fudge(10),
     MOD = ?MODULE,
     MFS = 1000,
@@ -370,16 +382,11 @@ new_20131217_a_body(TestDir) ->
     ok.
 
 new_20131217_c_test_() ->
-    TestDir = bitcask:create_test_dir(),
-    {setup,
-        fun() -> TestDir end,
-        fun bitcask:delete_test_dir/1,
-        {timeout, 300, fun() ->
-            ?_assertEqual(ok, new_20131217_c_body(TestDir))
-        end}
-    }.
+    {timeout, 300, ?_assertEqual(ok, new_20131217_c_body())}.
 
-new_20131217_c_body(TestDir) ->
+new_20131217_c_body() ->
+    catch token:stop(),
+    TestDir = filename:join(?TEST_FILEPATH, token:get_name()),
     bitcask_time:test__set_fudge(10),
     MOD = ?MODULE,
     MFS = 1000,
@@ -406,19 +413,15 @@ new_20131217_c_body(TestDir) ->
 
     Expected33 = [{1,Val2},{2,Val2},{3,Val2}],
     ?assertEqual(Expected33, lists:sort(_Var33)),
+    os:cmd("rm -rf " ++ TestDir),
     ok.
 
 %% new_20131217_d_test_() ->
-%%     TestDir = bitcask:create_test_dir(),
-%%     {setup,
-%%         fun() -> TestDir end,
-%%         fun bitcask:delete_test_dir/1,
-%%         {timeout, 300, fun() ->
-%%             ?_assertEqual(ok, new_20131217_d_body(TestDir))
-%%         end}
-%%     }.
+%%     {timeout, 300, ?_assertEqual(ok, new_20131217_d_body())}.
 
-%% new_20131217_d_body(TestDir) ->
+%% new_20131217_d_body() ->
+%%     catch token:stop(),
+%%     TestDir = filename:join(?TEST_FILEPATH, token:get_name()),
 %%     MOD = ?MODULE,
 %%     Val1 = <<0,0,0,0,0,0,0,0,0,0>>,%<<"v111111111">>,
 %%     Val2 = <<0,0,0,0,0,0,0,0,0,0,0,0,0>>,%<<"v222222222222">>,
@@ -460,16 +463,11 @@ new_20131217_c_body(TestDir) ->
 %%     ok.
 
 new_20131217_e_test_() ->
-    TestDir = bitcask:create_test_dir(),
-    {setup,
-        fun() -> TestDir end,
-        fun bitcask:delete_test_dir/1,
-        {timeout, 300, fun() ->
-            ?_assertEqual(ok, new_20131217_e_body(TestDir))
-        end}
-    }.
+    {timeout, 300, ?_assertEqual(ok, new_20131217_e_body())}.
 
-new_20131217_e_body(TestDir) ->
+new_20131217_e_body() ->
+    catch token:stop(),
+    TestDir = filename:join(?TEST_FILEPATH, token:get_name()),
     bitcask_time:test__set_fudge(10),
     MOD = ?MODULE,
     MFS = 400,
@@ -504,30 +502,30 @@ new_20131217_e_body(TestDir) ->
                     {30,V3},
                     {31,V3},
                     {32,V3}],
-    _Var2 = erlang:apply(MOD,bc_open,[TestDir,MFS]),
-    _Var4 = erlang:apply(MOD,puts,[_Var2,{1,11},V1]),
-    _Var9 = erlang:apply(MOD,bc_close,[_Var2]),
-    _Var12 = erlang:apply(MOD,bc_open,[TestDir,MFS]),
+     Var2 = erlang:apply(MOD,bc_open,[TestDir,MFS]),
+    _Var4 = erlang:apply(MOD,puts,[Var2,{1,11},V1]),
+    _Var9 = erlang:apply(MOD,bc_close,[Var2]),
+     Var12 = erlang:apply(MOD,bc_open,[TestDir,MFS]),
     _Var13 = erlang:apply(MOD,incr_clock,[]),
-    _Var16 = erlang:apply(MOD,delete,[_Var12,1]),
-    _Var19 = erlang:apply(MOD,puts,[_Var12,{1,10},V2]),
-    _Var20 = erlang:apply(MOD,delete,[_Var12,1]),
-    _Var22 = erlang:apply(MOD,delete,[_Var12,3]),
-    _Var24 = erlang:apply(MOD,merge_these,[_Var12, TestDir, [1]]),
-    %% _Var24 = erlang:apply(MOD,merge,[_Var12, TestDir]),
-    _Var27 = erlang:apply(MOD,puts,[_Var12,{14,32},V3]),
-    _Var28 = erlang:apply(MOD,delete,[_Var12,14]),
-    _Var37 = erlang:apply(MOD,puts,[_Var12,{15,17},V4]),
-    _Var38 = erlang:apply(MOD,delete,[_Var12,2]),
+    _Var16 = erlang:apply(MOD,delete,[Var12,1]),
+    _Var19 = erlang:apply(MOD,puts,[Var12,{1,10},V2]),
+    _Var20 = erlang:apply(MOD,delete,[Var12,1]),
+    _Var22 = erlang:apply(MOD,delete,[Var12,3]),
+    _Var24 = erlang:apply(MOD,merge_these,[Var12, TestDir, [1]]),
+    %% _Var24 = erlang:apply(MOD,merge,[Var12, TestDir]),
+    _Var27 = erlang:apply(MOD,puts,[Var12,{14,32},V3]),
+    _Var28 = erlang:apply(MOD,delete,[Var12,14]),
+    _Var37 = erlang:apply(MOD,puts,[Var12,{15,17},V4]),
+    _Var38 = erlang:apply(MOD,delete,[Var12,2]),
     _Var39 = erlang:apply(MOD,incr_clock,[]),
-    _Var45 = erlang:apply(MOD,puts,[_Var12,{15,15},V5]),
-    _Var46 = erlang:apply(MOD,merge_these,[_Var12, TestDir, [1,2,4,5,6]]),
-    %% _Var46 = erlang:apply(MOD,merge,[_Var12, TestDir]),
-    _Var54 = erlang:apply(MOD,bc_close,[_Var12]),
-    _Var56 = erlang:apply(MOD,bc_open,[TestDir,MFS]),
-    _Var63 = erlang:apply(MOD,fold,[_Var56]),
+    _Var45 = erlang:apply(MOD,puts,[Var12,{15,15},V5]),
+    _Var46 = erlang:apply(MOD,merge_these,[Var12, TestDir, [1,2,4,5,6]]),
+    %% _Var46 = erlang:apply(MOD,merge,[Var12, TestDir]),
+    _Var54 = erlang:apply(MOD,bc_close,[Var12]),
+     Var56 = erlang:apply(MOD,bc_open,[TestDir,MFS]),
+     Var63 = erlang:apply(MOD,fold,[Var56]),
     bitcask_time:test__clear_fudge(),
-    ?assertEqual(V63_expected, lists:sort(_Var63)),
+    ?assertEqual(V63_expected, lists:sort(Var63)),
     ok.
 
 bc_open(Dir, MaxFileSize) ->
@@ -604,7 +602,7 @@ merge_delete_race_pr156_regression_test2() ->
     %%    it's far too late and deletes a new incarnation of
     %%    file_id 1.
 
-    Dir = "/tmp/bc.merge_delete_race_pr156_regression",
+    Dir = filename:join(?TEST_FILEPATH, "bc.mrg_delete_race_pr156_regression"),
 
     os:cmd("rm -rf " ++ Dir),
     _ = application:start(bitcask),

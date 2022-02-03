@@ -1,10 +1,14 @@
-%%% File        : handle_errors.erl
+%%% File        : event_logger.erl
 %%% Author      : Ulf Norell
 %%% Description :
 %%% Created     : 26 Mar 2012 by Ulf Norell
 -module(event_logger).
 
--compile(export_all).
+-compile([export_all, nowarn_export_all]).
+-ifdef(PULSE).
+-compile({parse_transform, pulse_instrument}).
+-include_lib("pulse_otp/include/pulse_otp.hrl").
+-endif.
 
 -behaviour(gen_server).
 
@@ -128,6 +132,5 @@ add_event(#event{timestamp = Now, data = Data}, State) ->
   State#state{ events = [Event|State#state.events] }.
 
 timestamp() ->
-  {A, B, C} = os:timestamp(),
-  1000000 * (1000000 * A + B) + C.
+  erlang:system_time(microsecond).
 

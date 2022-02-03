@@ -21,6 +21,7 @@
 -module(bitcask_schema_tests).
 
 -include_lib("eunit/include/eunit.hrl").
+-compile([export_all, nowarn_export_all]).
 
 %% basic schema test will check to make sure that all defaults from the schema
 %% make it into the generated app.config
@@ -28,7 +29,6 @@ basic_schema_test_() ->
     {timeout, 60, fun basic_schema_test2/0}.
 
 basic_schema_test2() ->
-    lager:start(),
     %% The defaults are defined in ../priv/bitcask.schema. it is the file under test.
     Config = cuttlefish_unit:generate_templated_config(
         bitcask:app_priv_dir_file("bitcask.schema"), [], context(), predefined_schema()),
@@ -58,7 +58,6 @@ merge_window_test_() ->
     {timeout, 60, fun merge_window_test2/0}.
 
 merge_window_test2() ->
-    lager:start(),
     Conf = [
         {["bitcask", "merge", "policy"], window},
         {["bitcask", "merge", "window", "start"], 0},
@@ -94,7 +93,6 @@ override_schema_test_() ->
     {timeout, 60, fun override_schema_test2/0}.
 
 override_schema_test2() ->
-    lager:start(),
     %% Conf represents the riak.conf file that would be read in by cuttlefish.
     %% this proplists is what would be output by the conf_parse module
     Conf = [
@@ -119,7 +117,7 @@ override_schema_test2() ->
         {["bitcask", "io_mode"], nif}
     ],
 
-    %% The defaults are defined in ./priv/bitcask.schema. it is the file under test.
+    %% The defaults are defined in ../priv/bitcask.schema. it is the file under test.
     Config = cuttlefish_unit:generate_templated_config(
         bitcask:app_priv_dir_file("bitcask.schema"), Conf, context(), predefined_schema()),
 
@@ -152,7 +150,7 @@ multi_backend_test2() ->
             {["multi_backend", "default", "storage_backend"], bitcask},
             {["multi_backend", "default", "bitcask", "data_root"], "/data/default_bitcask"}
            ],
-    %% The defaults are defined in ./priv/bitcask.schema. it is the file under test.
+    %% The defaults are defined in ../priv/bitcask.schema. it is the file under test.
     Config = cuttlefish_unit:generate_templated_config([
             bitcask:app_priv_dir_file("bitcask.schema"),
             bitcask:app_priv_dir_file("bitcask_multi.schema"),

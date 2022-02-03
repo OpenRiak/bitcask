@@ -1,8 +1,6 @@
 %% -------------------------------------------------------------------
 %%
-%% bitcask: Eric Brewer-inspired key/value store
-%%
-%% Copyright (c) 2013 Basho Technologies, Inc. All Rights Reserved.
+%% Copyright (c) 2012-2017 Basho Technologies, Inc.
 %%
 %% This file is provided to you under the Apache License,
 %% Version 2.0 (the "License"); you may not use this file
@@ -19,28 +17,37 @@
 %% under the License.
 %%
 %% -------------------------------------------------------------------
+
+%% @doc Eric Brewer-inspired key/value store
 -module(bitcask_io).
 
+-export([
+    file_open/2,
+    file_close/1,
+    file_sync/1,
+    file_pread/3,
+    file_pwrite/3,
+    file_read/2,
+    file_write/2,
+    file_seekbof/1,
+    file_position/2,
+    file_truncate/1,
+    file_module/0
+]).
+
 -ifdef(PULSE).
--compile({parse_transform, pulse_instrument}).
+-compile([
+    {parse_transform, pulse_instrument},
+    {pulse_side_effect, [{file, '_', '_'}]}
+]).
+-include_lib("pulse_otp/include/pulse_otp.hrl").
 -endif.
 
 -ifdef(TEST).
+-compile([export_all, nowarn_export_all]).
 -include_lib("eunit/include/eunit.hrl").
+-include("bitcask.hrl").
 -endif.
-
--export([file_open/2,
-         file_close/1,
-         file_sync/1,
-         file_pread/3,
-         file_pwrite/3,
-         file_read/2,
-         file_write/2,
-         file_seekbof/1,
-         file_position/2,
-         file_truncate/1,
-         file_module/0,
-         determine_file_module/0]).
 
 file_open(Filename, Opts) ->
     M = file_module(),
@@ -83,10 +90,10 @@ file_truncate(Ref) ->
     M:file_truncate(Ref).
 
 file_module() ->
-    case get(bitcask_file_mod) of
+    case erlang:get(bitcask_file_mod) of
         undefined ->
             Mod = determine_file_module(),
-            put(bitcask_file_mod, Mod),
+            erlang:put(bitcask_file_mod, Mod),
             Mod;
         Mod ->
             Mod
@@ -118,7 +125,7 @@ determine_file_module() ->
         _ ->
             bitcask_file
     end.
--endif.
+-endif. % TEST
 
 -ifdef(TEST).
 
@@ -126,7 +133,7 @@ truncate_test_() ->
     {timeout, 60, fun truncate_test2/0}.
 
 truncate_test2() ->
-    Dir = "/tmp/bc.test.bitcask_io/",
+    Dir = filename:join(?TEST_FILEPATH, "bc.test.bitcask_io/"),
     one_truncate(filename:join(Dir, "truncate_test1.dat"), 50, 50),
     one_truncate(filename:join(Dir, "truncate_test2.dat"), {bof, 50}, 50),
     one_truncate(filename:join(Dir, "truncate_test3.dat"), {cur, -25}, 75),
@@ -151,4 +158,4 @@ one_truncate(Fname, Ofs, ExpectedSize) ->
     ok = file:close(File3),
     ?assertEqual({ok, ExpectedSize}, SizeRes).
 
--endif.
+-endif. % TEST

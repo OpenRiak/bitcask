@@ -29,8 +29,17 @@
 -export([lock_filename/2]).
 -endif.
 
+-include_lib("kernel/include/logger.hrl").
+
 -ifdef(PULSE).
--compile({parse_transform, pulse_instrument}).
+-compile([
+    {parse_transform, pulse_instrument},
+    {pulse_side_effect, [
+        {file, '_', '_'},
+        {bitcask_nifs, '_', '_'}
+    ]}
+]).
+-include_lib("pulse_otp/include/pulse_otp.hrl").
 -endif.
 
 -type lock_types() :: merge | write | create.
@@ -44,7 +53,8 @@ acquire(Type, Dirname) ->
     case bitcask_nifs:lock_acquire(LockFilename, IsWriteLock) of
         {ok, Lock} ->
             %% Successfully acquired our lock. Update the file with our PID.
-            case bitcask_nifs:lock_writedata(Lock, iolist_to_binary([os:getpid(), " \n"])) of
+            case bitcask_nifs:lock_writedata(
+                    Lock, erlang:iolist_to_binary([os:getpid(), " \n"])) of
                 ok ->
                     {ok, Lock};
                 {error, _} = Else ->
@@ -80,9 +90,10 @@ read_activefile(Type, Dirname) ->
     end.
 
 %% @doc Write a new active filename to an open lockfile.
--spec write_activefile(reference(), string()) -> {ftruncate_error, integer()} | {pwrite_error, integer()} | ok | {error, lock_not_writable}.
+-spec write_activefile(reference(), string())
+    -> {ftruncate_error, integer()} | {pwrite_error, integer()} | ok | {error, lock_not_writable}.
 write_activefile(Lock, ActiveFilename) ->
-    Contents = iolist_to_binary([os:getpid(), " ", ActiveFilename, "\n"]),
+    Contents = erlang:iolist_to_binary([os:getpid(), " ", ActiveFilename, "\n"]),
     bitcask_nifs:lock_writedata(Lock, Contents).
 
 %% ===================================================================
@@ -122,7 +133,7 @@ try_write_lock_acquisition(Filename) ->
             ok;
         {error, Reason} ->
             %% Failed to open the lock for reading due to other errors.
-            error_logger:error_msg("Failed to open lock file ~s: ~p\n",
+            ?LOG_ERROR("Failed to open lock file ~ts: ~0tp",
                                    [Filename, Reason]),
             not_stale
     end.

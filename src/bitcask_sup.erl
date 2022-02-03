@@ -1,8 +1,6 @@
 %% -------------------------------------------------------------------
 %%
-%% bitcask: Eric Brewer-inspired key/value store
-%%
-%% Copyright (c) 2010 Basho Technologies, Inc. All Rights Reserved.
+%% Copyright (c) 2010-2012 Basho Technologies, Inc.
 %%
 %% This file is provided to you under the Apache License,
 %% Version 2.0 (the "License"); you may not use this file
@@ -19,12 +17,14 @@
 %% under the License.
 %%
 %% -------------------------------------------------------------------
--module(bitcask_sup).
 
+%% @doc Eric Brewer-inspired key/value store
+-module(bitcask_sup).
 -behaviour(supervisor).
 
 -ifdef(PULSE).
 -compile({parse_transform, pulse_instrument}).
+-include_lib("pulse_otp/include/pulse_otp.hrl").
 -endif.
 %% API
 -export([start_link/0]).

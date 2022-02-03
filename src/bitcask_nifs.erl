@@ -61,6 +61,11 @@
     file_seekbof/1,
     file_truncate/1
 ]).
+-ifdef(BASHO_CHECK).
+%% Dialyzer and XRef won't recognize 'on_load' as using the function and
+%% will complain about it.
+-export([init_nif_lib/0]).
+-endif.
 
 %% Make sure only a consistent set of test macros are defined so we don't
 %% have to keep checking them all repeatedly.
@@ -70,39 +75,29 @@
 -else.
 -ifndef(EQC).
 -undef(PULSE).
--endif.
--endif.
-
--ifdef(TEST).
--export([
-    keydir_itr_int/4
-]).
--endif.
-
--ifdef(BASHO_CHECK).
-%% Dialyzer and XRef won't recognize 'on_load' as using the function and
-%% will complain about it.
--export([init_nif_lib/0]).
--endif.
--on_load(init_nif_lib/0).
-
--ifdef(PULSE).
--export([
-    set_pulse_pid/1
-]).
--compile({parse_transform, pulse_instrument}).
--compile({pulse_skip, [{init_nif_lib, 0}]}).
--endif. % PULSE
+-endif. % EQC
+-endif. % TEST
 
 -ifdef(EQC).
 -include_lib("eqc/include/eqc.hrl").
 -endif. % EQC
 
+-ifdef(PULSE).
+-compile([
+    {parse_transform, pulse_instrument},
+    {pulse_skip, [{init_nif_lib, 0}]}
+]).
+-include_lib("pulse_otp/include/pulse_otp.hrl").
+-endif. % PULSE
+
 -ifdef(TEST).
+-compile([export_all, nowarn_export_all]).
 -include_lib("eunit/include/eunit.hrl").
 -endif. % TEST
 
 -include("bitcask.hrl").
+
+-on_load(init_nif_lib/0).
 
 -type errno_atom() :: atom().   % POSIX errno as atom
 
@@ -112,11 +107,6 @@
 %% alternate scheduling support.
 -define(MIN_OTP_ALT_SCHED,  18).
 -define(ALT_SCHED_SUFFIX,   "_as").
-
--ifdef(PULSE).
-set_pulse_pid(_Pid) ->
-    erlang:nif_error({error, not_loaded}).
--endif.
 
 %% ===================================================================
 %% Internal functions
@@ -504,7 +494,7 @@ keydir_fold_cont(Curr, Ref, Fun, Acc0) ->
 init_nif_lib() ->
     SoDir = case code:priv_dir(?APPLICATION) of
         {error, bad_name} ->
-            ADir =  case code:which(?MODULE) of
+            ADir = case code:which(?MODULE) of
                 Beam when is_list(Beam) ->
                     filename:dirname(filename:dirname(Beam));
                 _ ->
@@ -519,44 +509,8 @@ init_nif_lib() ->
     end,
     SoBase = filename:join(SoDir, ?APPLICATION),
     AppEnv = application:get_all_env(?APPLICATION),
-    case dirty_schedulers_available() of
-        true ->
-            SoAlt = SoBase ++ ?ALT_SCHED_SUFFIX,
-            case erlang:load_nif(SoAlt, AppEnv) of
-                ok ->
-                    ok;
-                {error, {old_code, _}} = Fatal ->
-                    Fatal;
-                _ ->
-                    erlang:load_nif(SoBase, AppEnv)
-            end;
-        false ->
-            erlang:load_nif(SoBase, AppEnv)
-    end.
+    erlang:load_nif(SoBase, AppEnv).
 
-
--spec dirty_schedulers_available() -> boolean().
-dirty_schedulers_available() ->
-    {OtpRel, _} = string:to_integer(case erlang:system_info(otp_release) of
-        [$R | Rel] ->
-            Rel;
-        Rel ->
-            Rel
-    end),
-
-    case OtpRel >= ?MIN_OTP_ALT_SCHED of
-        false ->
-            false;
-        true ->
-            try erlang:system_info(dirty_cpu_schedulers) of
-                N when N > 0 ->
-                    true;
-                0 ->
-                    false
-            catch error:badarg ->
-                    false
-            end
-    end.
 %% ===================================================================
 %% EUnit tests
 %% ===================================================================
@@ -806,7 +760,7 @@ keydir_itr_out_of_date_test2() ->
                      end).
 
 put_till_frozen(R, Name) ->
-    bitcask_nifs:keydir_put(R, bitcask:rand_bytes(32), 0, 1234, 0, 1, bitcask_time:tstamp()),
+    bitcask_nifs:keydir_put(R, crypto:strong_rand_bytes(32), 0, 1234, 0, 1, bitcask_time:tstamp()),
     {ready, Ref2} = bitcask_nifs:keydir_new(Name),
     %%?debugFmt("Putting", []),
     case bitcask_nifs:keydir_itr_int(Ref2, 2000001,
@@ -920,7 +874,7 @@ g_entry() ->
                     offset = g_uint64(),
                     tstamp = g_uint32() }.
 
-keydir_get_put_prop() ->
+prop_keydir_get_put() ->
     ?FORALL(E, g_entry(),
             begin
                 {ok, Ref} = keydir_new(),
@@ -935,10 +889,7 @@ keydir_get_put_prop() ->
                 true
             end).
 
-keydir_get_put_test_() ->
-    {timeout, 60, fun() -> eqc:quickcheck(?QC_OUT(keydir_get_put_prop())) end}.
-
--endif.
+-endif. % EQC
 
 -ifdef(TIMING_TEST_NOT_EUNIT_TEST).
 
@@ -1044,4 +995,4 @@ iter(Fun, N) ->
 
 -endif. % TIMING_TEST_NOT_EUNIT_TEST
 
--endif. % EQC
+-endif. % TEST

@@ -25,12 +25,16 @@
          test__clear_fudge/0, test__time_travel_loop_sleep/0]).
 -define(KEY, bitcask_time_fudge).
 
+-ifdef(PULSE).
+-compile({parse_transform, pulse_instrument}).
+-include_lib("pulse_otp/include/pulse_otp.hrl").
+-endif.
+
 %% Return number of seconds since 1970
 tstamp() ->
     test__get(?KEY).
 
 test__set_fudge(Amount) ->
-    test__clear_fudge(),
     application:set_env(bitcask, ?KEY, Amount).
 
 test__get_fudge() ->
@@ -42,13 +46,13 @@ test__incr_fudge(Amount) ->
 test__get(Key) ->
     %% Play games with local process dictionary to avoid looking
     %% at application controller's ETS table for every call.
-    case get(Key) of
+    case erlang:get(Key) of
         undefined ->
             case application:get_env(bitcask, Key) of
                 undefined ->
-                    put(Key, no_testing);
+                    erlang:put(Key, no_testing);
                  _ ->
-                    put(Key, yes_testing)
+                    erlang:put(Key, yes_testing)
             end,
             test__get(Key);
         no_testing ->
@@ -58,7 +62,7 @@ test__get(Key) ->
             %% Something, somewhere can delete the Key, not looking now
             case application:get_env(bitcask, Key) of
                 undefined ->
-                    put(Key, no_testing),
+                    erlang:put(Key, no_testing),
                     test__get(Key);
                 {ok, Fudge} ->
                     Fudge
@@ -67,7 +71,7 @@ test__get(Key) ->
 
 test__clear_fudge() ->
     application:unset_env(bitcask, ?KEY),
-    erase(?KEY).
+    erlang:erase(?KEY).
 
 -ifdef(PULSE).
 test__time_travel_loop_sleep() ->

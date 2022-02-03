@@ -1,8 +1,6 @@
 %% -------------------------------------------------------------------
 %%
-%% bitcask: Eric Brewer-inspired key/value store
-%%
-%% Copyright (c) 2012 Basho Technologies, Inc. All Rights Reserved.
+%% Copyright (c) 2012-2017 Basho Technologies, Inc.
 %%
 %% This file is provided to you under the Apache License,
 %% Version 2.0 (the "License"); you may not use this file
@@ -19,16 +17,10 @@
 %% under the License.
 %%
 %% -------------------------------------------------------------------
+
+%% @doc Eric Brewer-inspired key/value store
 -module(bitcask_file).
 -behaviour(gen_server).
-
--ifdef(TEST).
--include_lib("eunit/include/eunit.hrl").
--endif.
-
--ifdef(PULSE).
--compile({parse_transform, pulse_instrument}).
--endif.
 
 %% API
 -export([file_open/2,
@@ -47,6 +39,15 @@
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
          terminate/2, code_change/3]).
+
+-include_lib("kernel/include/logger.hrl").
+-ifdef(PULSE).
+-compile([
+    {parse_transform, pulse_instrument},
+    {pulse_side_effect, [{file, '_', '_'}]}
+]).
+-include_lib("pulse_otp/include/pulse_otp.hrl").
+-endif.
 
 -record(state, {fd    :: 'undefined' | file:fd(),
                 owner :: 'undefined' | pid()}).
@@ -148,7 +149,7 @@ handle_call({file_open, Owner, Filename, Opts}, _From, State) ->
                {_, true} ->
                    [read, write, exclusive, raw, binary]
            end,
-    _ = [error_logger:warning_msg("Bitcask file option '~p' not supported~n", [Opt])
+    _ = [?LOG_WARNING("Bitcask file option '~0tp' not supported", [Opt])
      || Opt <- [o_sync],
         proplists:get_bool(Opt, Opts)],
     case file:open(Filename, Mode) of
@@ -156,7 +157,7 @@ handle_call({file_open, Owner, Filename, Opts}, _From, State) ->
             State2 = State#state{fd=Fd, owner=Owner},
             {reply, ok, State2};
         Error = {error, Reason} ->
-            error_logger:error_msg("Failed to open file ~p: ~p~n",
+            ?LOG_WARNING("Failed to open file ~0tp: ~0tp",
                                    [Filename, Reason]),
             {stop, {file_open_failed, Reason}, Error, State}
     end;

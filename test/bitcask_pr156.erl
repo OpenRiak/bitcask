@@ -20,22 +20,14 @@
 
 -module(bitcask_pr156).
 
+-compile([export_all, nowarn_export_all]).
 -include_lib("eunit/include/eunit.hrl").
 -include("bitcask.hrl").
 
--define(BITCASK, "/tmp/bc.pr156_regression").
 %% Number of keys used in the tests
 -define(NUM_KEYS, 50).
 %% max_file_size given to bitcask.
 -define(FILE_SIZE, 400).
-
--ifdef(NO_RAND_MODULE).
--define(rand_seed(S),       random:seed(S)).
--define(rand_uniform(N),    random:uniform(N)).
--else.
--define(rand_seed(S),       rand:seed(exsplus, S)).
--define(rand_uniform(N),    rand:uniform(N)).
--endif.
 
 pr156_regression1_test_() ->
     %% This is a test for a setuid-bit regression late in the
@@ -60,7 +52,7 @@ pr156_regression2_test_() ->
 pr156_regression1(X) ->
     io:format("pr156_regression1 ~p at ~p\n", [X, os:timestamp()]),
     token:next_name(),
-    Dir = ?BITCASK ++ ".1." ++ token:get_name(),
+    Dir = filename:join(?TEST_FILEPATH, "1." ++ token:get_name()),
     os:cmd("rm -rf " ++ Dir),
     bitcask_time:test__set_fudge(10),
     V3 = goo({call,bitcask_pulse,bc_open,[Dir]}),
@@ -100,7 +92,7 @@ pr156_regression1(X) ->
 pr156_regression2(X) ->
     io:format("pr156_regression2 ~p at ~p\n", [X, os:timestamp()]),
     token:next_name(),
-    Dir = ?BITCASK ++ ".2." ++ token:get_name(),
+    Dir = filename:join(?TEST_FILEPATH, "2." ++ token:get_name()),
     os:cmd("rm -rf " ++ Dir),
     bitcask_time:test__set_fudge(10),
     try
@@ -160,12 +152,12 @@ check_no_tombstones(Ref, Good) ->
     end.
 
 make_merge_txt(Dir, Seed, Probability) ->
-    ?rand_seed(Seed),
+    rand:seed(exsss, Seed),
     case filelib:is_dir(Dir) of
         true ->
             DataFiles = filelib:wildcard("*.data", Dir),
             {ok, FH} = file:open(Dir ++ "/merge.txt", [write]),
-            [case ?rand_uniform(100) < Probability of
+            [case rand:uniform(100) < Probability of
                  true ->
                      io:format(FH, "~s\n", [DF]);
                  false ->

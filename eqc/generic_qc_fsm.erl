@@ -59,8 +59,9 @@
 -include_lib("eqc/include/eqc_fsm.hrl").
 -include_lib("kernel/include/file.hrl").
 -include_lib("eunit/include/eunit.hrl").
+-include("include/bitcask.hrl").
 
--compile(export_all).
+-compile([export_all, nowarn_export_all]).
 
 -record(state,{ handle :: term(),
                 dir :: term(),
@@ -74,7 +75,7 @@
 -define(QC_OUT(P),
         eqc:on_output(fun(Str, Args) -> io:format(user, Str, Args) end, P)).
 
--define(TEST_DIR, "/tmp/generic.qc").
+-define(TEST_DIR, filename:join(?TEST_FILEPATH, "generic.qc")).
 
 initial_state() ->
     init.
@@ -129,27 +130,13 @@ precondition(_From,_To,_S,_Call) ->
 postcondition(_OldSt, _NewSt, _S, {call, _, _Func, _Args}, _Res) ->
     true.
 
-qc_test_SKIP_FOR_NOW() ->
-    TestTime = 45,
-    {timeout, TestTime*4,
-     {setup, fun prepare/0, fun cleanup/1,
-      %% Run for one second without FI to allow code loader to load everything
-      %% without interference from artificial faults.
-      [{timeout, TestTime*2, ?_assertEqual(true,
-                eqc:quickcheck(eqc:testing_time(1, ?QC_OUT(prop(false)))))},
-       %% TODO: check an OS env var or check result of an experimental peek
-       %%       to see if we can run with FI, then change the arg below!
-       {timeout, TestTime*2, ?_assertEqual(true,
-                eqc:quickcheck(eqc:testing_time(TestTime, ?QC_OUT(prop()))))}
-      ]}}.
-
 prepare() ->
     ok.
 
 cleanup(_) ->
     ok.
 
-prop() ->
+prop_correct() ->
     prop(false).
 
 prop(FI_enabledP) ->

@@ -1,8 +1,6 @@
 %% -------------------------------------------------------------------
 %%
-%% bitcask: Eric Brewer-inspired key/value store
-%%
-%% Copyright (c) 2010 Basho Technologies, Inc. All Rights Reserved.
+%% Copyright (c) 2010-2016 Basho Technologies, Inc.
 %%
 %% This file is provided to you under the Apache License,
 %% Version 2.0 (the "License"); you may not use this file
@@ -19,17 +17,20 @@
 %% under the License.
 %%
 %% -------------------------------------------------------------------
--module(bitcask_merge_worker).
 
+%% @doc Eric Brewer-inspired key/value store
+-module(bitcask_merge_worker).
 -behaviour(gen_server).
 
 -ifdef(PULSE).
 -compile({parse_transform, pulse_instrument}).
+-include_lib("pulse_otp/include/pulse_otp.hrl").
 -endif.
 
 -ifdef(TEST).
 -ifdef(EQC).
 -include_lib("eqc/include/eqc.hrl").
+-export([prop_in_window/0]).
 -endif.
 -include_lib("eunit/include/eunit.hrl").
 -endif.
@@ -45,6 +46,8 @@
 
 -record(state, { queue :: list(),
                 worker :: undefined | pid()}).
+
+-include_lib("kernel/include/logger.hrl").
 
 %% ====================================================================
 %% API
@@ -140,7 +143,7 @@ handle_info({'EXIT', _Pid, normal}, #state { queue = Q } = State) ->
     end;
 
 handle_info({'EXIT', Pid, Reason}, #state { worker = Pid } = State) ->
-    error_logger:error_msg("Merge worker PID exited: ~p\n", [Reason]),
+    ?LOG_ERROR("Merge worker PID exited: ~0tp", [Reason]),
     {stop, State}.
 
 terminate(_Reason, State) ->
@@ -197,10 +200,10 @@ do_merge(Args) ->
             [_,_,Args3] = Args,
             case Result of
                 ok ->
-                    error_logger:info_msg("Merged ~p in ~p seconds.\n",
+                    ?LOG_INFO("Merged ~0tp in ~0tp seconds.",
                                           [Args3, ElapsedSecs]);
                 {Error, Reason} when Error == error; Error == 'EXIT' ->
-                    error_logger:error_msg("Failed to merge ~p: ~p\n",
+                    ?LOG_ERROR("Failed to merge ~0tp: ~0tp",
                                            [Args3, Reason])
             end;
         false ->
@@ -217,8 +220,8 @@ merge_window() ->
                                         EndHour >= 0, EndHour =< 23 ->
             {StartHour, EndHour};
         Other ->
-            error_logger:error_msg("Invalid bitcask_merge window specified: ~p. "
-                                   "Defaulting to 'always'.\n", [Other]),
+            ?LOG_ERROR("Invalid bitcask_merge window specified: ~0tp. "
+                                   "Defaulting to 'always'.", [Other]),
             always
     end.
 
@@ -252,10 +255,4 @@ prop_in_window() ->
                 ?assertEqual(ExpInWindow, in_merge_window(NowHour, {StartTime, EndTime})),
                 true
             end).
-
-prop_in_window_test_() ->
-    {timeout, 30,
-     [fun() -> ?assert(eqc:quickcheck(prop_in_window())) end]}.
-
-
 -endif.
