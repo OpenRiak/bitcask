@@ -21,7 +21,6 @@ _build/
 _checkouts/
 _deps/
 _test/
-deps/
 ebin/
 log/
 logs/
@@ -46,6 +45,7 @@ rebar.lock
 .settings/
 .tm_properties
 .vscode/
+/*.sh
 /*.txt
 erln8.config
 tmp/

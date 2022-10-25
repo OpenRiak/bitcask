@@ -49,6 +49,7 @@
 -spec acquire(Type::lock_types(), Dirname::string()) -> {ok, reference()} | {error, any()}.
 acquire(Type, Dirname) ->
     LockFilename = lock_filename(Type, Dirname),
+    %% All lock_types() require a write lock on the file.
     IsWriteLock = 1,
     case bitcask_nifs:lock_acquire(LockFilename, IsWriteLock) of
         {ok, Lock} ->

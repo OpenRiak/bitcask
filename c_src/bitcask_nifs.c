@@ -1,7 +1,7 @@
 // -------------------------------------------------------------------
 //
 // Copyright (c) 2010-2017 Basho Technologies, Inc.
-// Copyright (c) 2018 Workday, Inc.
+// Copyright (c) 2018-2022 Workday, Inc.
 //
 // This file is provided to you under the Apache License,
 // Version 2.0 (the "License"); you may not use this file
@@ -41,8 +41,6 @@
 #include "khash.h"
 #include "murmurhash.h"
 
-//#pragma GCC diagnostic push
-//#pragma GCC diagnostic ignored "-Wunused-function"
 //typesystem hack to avoid some incorrect errors.
 typedef ErlNifUInt64 uint64;
 
@@ -3046,5 +3044,3 @@ static int on_load(ErlNifEnv* env, void** priv_data, ERL_NIF_TERM load_info)
 }
 
 ERL_NIF_INIT(bitcask_nifs, nif_funcs, &on_load, NULL, NULL, NULL);
-
-//#pragma GCC diagnostic pop
