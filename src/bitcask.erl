@@ -1,7 +1,7 @@
 %% -------------------------------------------------------------------
 %%
 %% Copyright (c) 2010-2017 Basho Technologies, Inc.
-%% Copyright (c) 2018 Workday, Inc.
+%% Copyright (c) 2018-2022 Workday, Inc.
 %%
 %% This file is provided to you under the Apache License,
 %% Version 2.0 (the "License"); you may not use this file
@@ -55,28 +55,8 @@
 -endif.
 -endif.
 
--ifdef(TEST).
--export([
-    app_priv_dir/0,
-    app_priv_dir_file/1,
-    app_test_dir/0,
-    app_test_dir_file/1,
-    create_test_dir/0,
-    delete_test_dir/1,
-    has_pending_delete_bit/1,
-    leak_t0/0,
-    leak_t1/0,
-    lib_sub_dir/1,
-    make_merge_file/2,
-    readable_files/1,
-    subfold/3
-]).
--endif.
-
 -ifdef(PULSE).
 -compile([
-    export_all,
-    nowarn_export_all,
     {parse_transform, pulse_instrument},
     {pulse_side_effect, [{bitcask_nifs, '_', '_'}]}
 ]).
@@ -123,11 +103,17 @@
                    max_file_size = 0 :: integer(),  % Max. size of a written file
                    opts = [] :: list(),           % Original options used to open the bitcask
                    key_transform :: 'undefined' | function(),
+                   stats_callback :: 'undefined' | function(),
                    keydir :: reference(),       % Key directory
                    read_write_p = 0 :: integer(),    % integer() avoids atom -> NIF
                    % What tombstone style to write, for testing purposes only.
                    % 0 = old style without file id, 2 = new style with file id
                    tombstone_version = 2 :: 0 | 2
+}).
+
+-record(mstats, {
+    expired_keys = 0 :: integer(),
+    expired_bytes = 0 :: integer() % For each expired key, bytes represent: KeySize + ValueSize + HEADER_SIZE (constant)
 }).
 
 -record(mstate, { dirname :: string(),
@@ -143,6 +129,7 @@
                   del_keydir :: reference(),
                   expiry_time :: integer(),
                   expiry_grace_time :: integer(),
+                  stats :: #mstats{},
                   key_transform :: function(),
                   read_write_p :: integer(),    % integer() avoids atom -> NIF
                   opts :: list(),
@@ -180,9 +167,10 @@ open(Dirname, Opts) ->
               ok ->
                   ok;
               not_stale ->
-                  error_logger:error_msg(
-                      "Attempted to obtain the Bitcask write lock for '~s' but another "
-                      "Bitcask DB has the lock! Continuing but all write operations will fail.", [Dirname])
+                  ?LOG_ERROR(
+                      "Attempted to obtain the Bitcask write lock for '~ts' but"
+                      " another Bitcask DB has the lock! Continuing but all"
+                      " write operations will fail.", [Dirname])
           end,
           fresh;
         false ->
@@ -191,6 +179,8 @@ open(Dirname, Opts) ->
 
     %% Get the max file size parameter from opts
     MaxFileSize = get_opt(max_file_size, Opts),
+
+    StatsCallback = get_stats_callback(get_opt(stats_callback, Opts)),
 
     %% Get the number of seconds we are willing to wait for the keydir init to timeout
     WaitTime = timer:seconds(get_opt(open_timeout, Opts)),
@@ -221,6 +211,7 @@ open(Dirname, Opts) ->
                                        keydir = KeyDir,
                                        key_transform = KeyTransformFun,
                                        tombstone_version = TombstoneVersion,
+                                       stats_callback = StatsCallback,
                                        read_write_p = ReadWriteI}),
             Ref;
         {error, Reason} ->
@@ -292,6 +283,8 @@ get(Ref, Key, TryNum) ->
                                                     E#bitcask_entry.file_id,
                                                     E#bitcask_entry.offset) of
                         ok ->
+                            StatsCallback = State#bc_state.stats_callback,
+                            StatsCallback({expired_keys, 1, E#bitcask_entry.total_sz}),
                             not_found;
                         already_exists ->
                             % Updated since last read, try again.
@@ -676,7 +669,6 @@ merge1(Dirname, Opts, FilesToMerge0, ExpiredFiles) ->
             %% We'll bail here and try again later.
 
             ok = bitcask_lockops:release(Lock),
-            % Make erlc happy w/ non-local exit
             throw({error, not_ready})
     end,
 
@@ -747,10 +739,13 @@ merge1(Dirname, Opts, FilesToMerge0, ExpiredFiles) ->
                       key_transform = KT,
                       read_write_p = 0,
                       opts = Opts,
+                      stats = #mstats {},
                       delete_files = []},
 
     %% Finally, start the merge process
-    ExpiredFilesFinished = expiry_merge(InExpiredFiles, LiveKeyDir, KT, []),
+    {ExpiredFilesFinished, KeysExpired, BytesExpired} =
+        expiry_merge(InExpiredFiles, LiveKeyDir, KT, {[], 0, 0}),
+
     State1 = merge_files(State),
 
     %% Make sure to close the final output file
@@ -781,6 +776,13 @@ merge1(Dirname, Opts, FilesToMerge0, ExpiredFiles) ->
     %% Explicitly release our keydirs instead of waiting for GC
     bitcask_nifs:keydir_release(LiveKeyDir),
     bitcask_nifs:keydir_release(DelKeyDir),
+
+    StatsCallback = get_stats_callback(get_opt(stats_callback, Opts)),
+    StatsCallback({
+        expired_keys,
+        KeysExpired + State1#mstate.stats#mstats.expired_keys,
+        BytesExpired + State1#mstate.stats#mstats.expired_bytes
+    }),
 
     ok = bitcask_lockops:release(Lock).
 
@@ -1451,7 +1453,7 @@ merge_files(#mstate {  dirname = Dirname,
              end,
     merge_files(State2#mstate { input_files = Rest }).
 
-merge_single_entry(K, V, Tstamp, FileId, {_, _, Offset, _} = Pos, State) ->
+merge_single_entry(K, V, Tstamp, FileId, {_, _, Offset, Bytes} = Pos, State) ->
     case out_of_date(State, K, Tstamp, FileId, Pos, State#mstate.expiry_time,
                      false,
                      [State#mstate.live_keydir, State#mstate.del_keydir]) of
@@ -1474,7 +1476,19 @@ merge_single_entry(K, V, Tstamp, FileId, {_, _, Offset, _} = Pos, State) ->
             %% Remove only if this is the current entry in the keydir
             bitcask_nifs:keydir_remove(State#mstate.live_keydir, K,
                                        Tstamp, FileId, Offset),
-            State;
+
+            OldStats = State#mstate.stats,
+            OldExpiredBytes = OldStats#mstats.expired_bytes,
+            OldExpiredKeys = OldStats#mstats.expired_keys,
+
+            NewStats = OldStats#mstats {
+                expired_bytes = OldExpiredBytes + Bytes,
+                expired_keys = OldExpiredKeys + 1
+            },
+
+            State#mstate {
+                stats = NewStats
+            };
         not_found ->
             %% First tombstone seen for this key during this merge
             merge_single_tombstone(K,V, Tstamp, FileId, Offset, State);
@@ -2013,31 +2027,41 @@ expiry_merge([File | Files], LiveKeyDir, KT, Acc0) ->
     FileId = bitcask_fileops:file_tstamp(File),
     Fun = fun({tombstone, _}, _, _, Acc) ->
                   Acc;
-             (K0, Tstamp, {Offset, _TotalSz}, Acc) ->
+             (K0, Tstamp, {Offset, TotalSz}, {KeysExpired, BytesExpired} = Acc) ->
                   K = try KT(K0) catch TxErr -> {key_tx_error, TxErr} end,
                   case K of
                       {key_tx_error, KeyTxErr} ->
                           ?LOG_ERROR("Invalid key on merge ~0tp: ~0tp",
-                                                 [K0, KeyTxErr]);
+                                                 [K0, KeyTxErr]),
+                          Acc;
                       _ ->
                           bitcask_nifs:keydir_remove(LiveKeyDir, K, Tstamp,
-                                                     FileId, Offset)
-                  end,
-                  Acc
+                                                     FileId, Offset),
+                          {KeysExpired + 1, BytesExpired + TotalSz}
+                  end
         end,
     Acc =
-    case bitcask_fileops:fold_keys(File, Fun, ok, default) of
+    case bitcask_fileops:fold_keys(File, Fun, {0, 0}, default) of
         {error, Reason} ->
             ?LOG_ERROR("Error folding keys for ~0tp: ~0tp",
                                    [File#filestate.filename,Reason]),
             Acc0;
-        _ ->
+        {NewKeysExpired, NewBytesExpired} ->
             ?LOG_INFO("All keys expired in: ~0tp scheduling "
                                   "file for deletion",
                                   [File#filestate.filename]),
-            lists:append(Acc0, [File])
+            {FilesRemoved, KeysExpired, BytesExpired} = Acc0,
+            {[File | FilesRemoved],
+                KeysExpired + NewKeysExpired,
+                BytesExpired + NewBytesExpired}
     end,
     expiry_merge(Files, LiveKeyDir, KT, Acc).
+
+get_stats_callback(StatsCallback)
+    when is_function(StatsCallback) ->
+      StatsCallback;
+get_stats_callback(_State) ->
+    fun (_) -> ok end.
 
 get_key_transform(KT)
   when is_function(KT) ->
@@ -2094,6 +2118,7 @@ create_test_dir() ->
     %% The compiler should optimize the whole command to a literal string,
     %% this is just easier to read.
     Pattern = ?TEST_FILEPATH ++ "/" ++ ?MODULE_STRING ++ ".XXXXXXX",
+    ?assertMatch(ok, filelib:ensure_dir(Pattern)),
     string:strip(?cmd("mktemp -d " ++ Pattern), both, $\n).
 
 %% Deletes a test directory fully, whether or not it exists.
@@ -3560,6 +3585,59 @@ no_crash_on_key_transform_test() ->
     B2 = bitcask:open(Dir, [{key_transform, CrashTx}]),
     ok = bitcask:close(B2),
     ok.
+
+get_expired_test_() ->
+    {foreach,
+     fun() ->
+             meck:new(stats, [non_strict]),
+             meck:expect(stats, callback, fun(_) -> ok end),
+             ok
+     end,
+     fun(_) ->
+             meck:unload()
+     end,
+    [{timeout, 4, fun get_call_expires_key/0},
+     {timeout, 6, fun stats_callback_is_called_only_when_expired_key_is_cleaned_up/0},
+     {timeout, 6, fun stats_callback_gets_called_twice_for_multiple_expirations/0}]}.
+
+%% Tests that keys are no longer returned when a get is called on an expired key.
+get_call_expires_key() ->
+    Dir = setup_testfolder("bc.get.expired.keys"),
+
+    B1 = bitcask:open(Dir, [read_write, {expiry_secs, 1}, {stats_callback, fun stats:callback/1}]),
+    ok = bitcask:put(B1,<<"k">>,<<"v">>),
+    ok = bitcask:put(B1,<<"k">>,<<"b">>),
+    timer:sleep(2000),
+    not_found = bitcask:get(B1,<<"k">>),
+    NumCalls = meck:num_calls(stats, callback, [{expired_keys, 1, 16}]),
+    ?assertEqual(NumCalls, 1).
+
+stats_callback_is_called_only_when_expired_key_is_cleaned_up() ->
+    Dir = setup_testfolder("bc.get.expired.keys"),
+
+    B1 = bitcask:open(Dir, [read_write, {expiry_secs, 1}, {stats_callback, fun stats:callback/1}]),
+    %% This first key, while "expired" will never count as expired.
+    %% This is because nothing (e.g. get) is triggering the clean-up
+    ok = bitcask:put(B1,<<"k">>,<<"v">>),
+    timer:sleep(2000),
+    ok = bitcask:put(B1,<<"k">>,<<"b">>),
+    timer:sleep(2000),
+    not_found = bitcask:get(B1,<<"k">>),
+    NumCalls = meck:num_calls(stats, callback, [{expired_keys, 1, 16}]),
+    ?assertEqual(NumCalls, 1).
+
+stats_callback_gets_called_twice_for_multiple_expirations() ->
+    Dir = setup_testfolder("bc.get.expired.keys"),
+
+    B1 = bitcask:open(Dir, [read_write, {expiry_secs, 1}, {stats_callback, fun stats:callback/1}]),
+    ok = bitcask:put(B1,<<"b">>,<<"v">>),
+    timer:sleep(2000),
+    not_found = bitcask:get(B1,<<"b">>),
+    ok = bitcask:put(B1,<<"k">>,<<"b">>),
+    timer:sleep(2000),
+    not_found = bitcask:get(B1,<<"k">>),
+    NumCalls = meck:num_calls(stats, callback, [{expired_keys, 1, 16}]),
+    ?assertEqual(NumCalls, 2).
 
 
 total_byte_stats_test_() ->
