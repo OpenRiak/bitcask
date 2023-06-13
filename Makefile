@@ -2,7 +2,7 @@
 REBAR ?= rebar3
 
 compile:
-	$(REBAR) compile
+	$(REBAR) as prod compile
 
 clean:
 	$(REBAR) clean
@@ -10,24 +10,25 @@ clean:
 cover: test
 	$(REBAR) cover
 
-test: compile
+test:
 	$(REBAR) eunit
 
 dialyzer:
-	$(REBAR) dialyzer
+	$(REBAR) as check dialyzer
 
 eqc:
-	$(REBAR) eqc
+	$(REBAR) as eqc eqc
 
 xref:
-	$(REBAR) xref
+	$(REBAR) as check xref
 
 PULSE_TESTING_TIME ?= 30
 
-pulse: compile
+pulse:
+	$(REBAR) as pulse compile
 	mkdir -p .pulse
 	cp eqc/pulse/Emakefile .pulse
-	cp _build/default/lib/bitcask/ebin/bitcask.app .pulse
+	cp _build/pulse/lib/bitcask/ebin/bitcask.app .pulse
 	(cd .pulse; \
 		erl -make; \
 		erl -noshell -s bitcask_pulse run_tests $(PULSE_TESTING_TIME))
