@@ -17,8 +17,8 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
-        otp: ['22', '24']
-        rebar: ['3.13', '3.20']
+        otp: ['24', '26']
+        rebar: ['3.20', '3.22']
 
     steps:
       - uses: actions/checkout@v2
