@@ -1,6 +1,7 @@
 %% -------------------------------------------------------------------
 %%
 %% Copyright (c) 2010-2017 Basho Technologies, Inc.
+%% Copyright (c) 2022-2023 Workday, Inc.
 %%
 %% This file is provided to you under the Apache License,
 %% Version 2.0 (the "License"); you may not use this file
@@ -33,12 +34,14 @@
          sync/1,
          delete/1,
          fold/3,
-         fold_keys/3, fold_keys/4,
+         fold_keys/3,
          mk_filename/2,
          filename/1,
          hintfile_name/1,
          file_tstamp/1,
          check_write/4,
+         validate_hintfile/1,
+         maybe_delete_hintfile/2,
          un_write/1]).
 -export([read_file_info/1, write_file_info/2, is_file/1]).
 
@@ -51,12 +54,6 @@
 -ifndef(EQC).
 -undef(PULSE).
 -endif.
--endif.
-
--ifdef(TEST).
--export([
-    has_valid_hintfile/1
-]).
 -endif.
 
 -ifdef(PULSE).
@@ -72,6 +69,11 @@
 -endif.
 -ifdef(EQC).
 -include_lib("eqc/include/eqc.hrl").
+-endif.
+
+-ifdef(TEST).
+-compile([export_all, nowarn_export_all]).
+-include_lib("eunit/include/eunit.hrl").
 -endif.
 
 -include_lib("kernel/include/file.hrl").
@@ -158,23 +160,26 @@ open_file(Filename, append) ->
                     _ = file:delete(Filename),
                     {error, enoent};
                 {ok, Ofs} ->
+                    DefaultFileState = #filestate{mode = read_write,
+                                                  filename = Filename,
+                                                  tstamp = file_tstamp(Filename),
+                                                  fd = FD,
+                                                  hintfd = undefined,
+                                                  hintcrc = 0,
+                                                  ofs = Ofs
+                                                 },
+
                     case reopen_hintfile(Filename) of
                         {error, enoent} ->
-                            bitcask_io:file_close(FD),
-                            {error, enoent};
+                            {ok, DefaultFileState};
                         {undefined, _} ->
-                            bitcask_io:file_close(FD),
-                            {error, enoent};
+                            {ok, DefaultFileState};
                         {HintFD, HintCRC} ->
                             {ok,
-                             #filestate{mode = read_write,
-                                        filename = Filename,
-                                        tstamp = file_tstamp(Filename),
-                                        fd = FD,
-                                        hintfd = HintFD,
-                                        hintcrc = HintCRC,
-                                        ofs = Ofs
-                                       }}
+                             DefaultFileState#filestate{
+                               hintfd = HintFD,
+                               hintcrc = HintCRC
+                              }}
                     end
             end;
         {error, _Reason} = Err ->
@@ -321,25 +326,26 @@ write(Filestate=#filestate{fd = FD, hintfd = HintFD,
     %% Store the full entry in the data file
     try
         ok = bitcask_io:file_pwrite(FD, Offset, Bytes),
-        %% Create and store the corresponding hint entry
         TotalSz = iolist_size(Bytes),
-        TombInt = case bitcask:is_tombstone(Value) of
-                      true  -> 1;
-                      false -> 0
-                  end,
-        Iolist = hintfile_entry(Key, Tstamp, TombInt, Offset, TotalSz),
-        case HintFD of
-            undefined ->
-                ok;
-            _ ->
-                ok = bitcask_io:file_write(HintFD, Iolist)
-        end,
-        %% Record our final offset
-        HintCRC = erlang:crc32(HintCRC0, Iolist), % compute crc of hint
+        {LHBytes, HintCRC} = case HintFD of
+                                 undefined ->
+                                     {0, 0};
+                                 _ ->
+                                     %% Create and store the corresponding hint entry
+                                     TombInt = case bitcask:is_tombstone(Value) of
+                                                   true  -> 1;
+                                                   false -> 0
+                                               end,
+                                     Iolist = hintfile_entry(Key, Tstamp, TombInt, Offset, TotalSz),
+
+                                     ok = bitcask_io:file_write(HintFD, Iolist),
+                                     {iolist_size(Iolist), erlang:crc32(HintCRC0, Iolist)}
+                             end,
+
         {ok, Filestate#filestate{ofs = Offset + TotalSz,
                                  hintcrc = HintCRC,
                                  l_ofs = Offset,
-                                 l_hbytes = iolist_size(Iolist),
+                                 l_hbytes = LHBytes,
                                  l_hintcrc = HintCRC0}, Offset, TotalSz}
     catch
         error:{badmatch,Error} ->
@@ -347,17 +353,25 @@ write(Filestate=#filestate{fd = FD, hintfd = HintFD,
     end.
 
 %% WARNING: We can only undo the last write.
-un_write(Filestate=#filestate{fd = FD, hintfd = HintFD,
-                              l_ofs = LastOffset,
-                              l_hbytes = LastHintBytes,
-                              l_hintcrc = LastHintCRC}) ->
+un_write(FS=#filestate{fd = FD,
+                       l_ofs = LastOffset
+                      }) ->
     {ok, _O2} = bitcask_io:file_position(FD, LastOffset),
     ok = bitcask_io:file_truncate(FD),
     {ok, 0} = bitcask_io:file_position(FD, 0),
+
+    {ok, FS1} = un_write_hintfile(FS),
+    {ok, FS1#filestate{ofs = LastOffset}}.
+
+un_write_hintfile(FS=#filestate{hintfd=undefined}) ->
+    FS;
+un_write_hintfile(FS=#filestate{l_hbytes = LastHintBytes,
+                                l_hintcrc = LastHintCRC,
+                                hintfd = HintFD
+                               }) ->
     {ok, _HO2} = bitcask_io:file_position(HintFD, {cur, -LastHintBytes}),
     ok = bitcask_io:file_truncate(HintFD),
-    {ok, Filestate#filestate{ofs = LastOffset,
-                             hintcrc = LastHintCRC}}.
+    {ok, FS#filestate{hintcrc = LastHintCRC}}.
 
 %% @doc Given an Offset and Size, get the corresponding k/v from Filename.
 -spec read(Filename :: string() | filestate(), Offset :: integer(),
@@ -414,48 +428,23 @@ fold(#filestate { fd=Fd, filename=Filename, tstamp=FTStamp }, Fun, Acc0) ->
     end.
 
 -type key_fold_fun() :: fun((binary(), integer(), {integer(), integer()}, any()) -> any()).
--type key_fold_mode() :: datafile | hintfile | default | recovery.
--spec fold_keys(filestate(), key_fold_fun(), any()) ->
+-spec fold_keys(fresh | filestate(), key_fold_fun(), any()) ->
         any() | {error, any()}.
 fold_keys(fresh, _Fun, Acc) -> Acc;
-fold_keys(State, Fun, Acc) ->
-    fold_keys(State, Fun, Acc, default).
-
--spec fold_keys(filestate(), key_fold_fun(), any(), key_fold_mode()) ->
-        any() | {error, any()}.
-fold_keys(State, Fun, Acc, datafile) ->
-    fold_keys_loop(State, 0, Fun, Acc);
-fold_keys(#filestate { fd = _Fd } = State, Fun, Acc, hintfile) ->
-    fold_hintfile(State, Fun, Acc);
-fold_keys(State, Fun, Acc, Mode) ->
-    fold_keys(State, Fun, Acc, Mode, has_hintfile(State)).
-
-fold_keys(State, Fun, Acc, default, true) ->
-    fold_hintfile(State, Fun, Acc);
-fold_keys(State, Fun, Acc, default, false) ->
-    fold_keys_loop(State, 0, Fun, Acc);
-fold_keys(State, Fun, Acc, recovery, true) ->
-    fold_keys(State, Fun, Acc, recovery, true, has_valid_hintfile(State));
-fold_keys(State, Fun, Acc, recovery, false) ->
-    fold_keys_loop(State, 0, Fun, Acc).
-
-fold_keys(State, Fun, Acc, recovery, _, true) ->
-    case fold_hintfile(State, Fun, Acc) of
+fold_keys(FS=#filestate{hintfd = undefined}, Fun, Acc) ->
+    fold_keys_loop(FS, 0, Fun, Acc);
+fold_keys(FS, Fun, Acc) ->
+    case fold_hintfile(FS, Fun, Acc) of
         {error, {trunc_hintfile, Acc0}} ->
             Acc0;
         {error, Reason} ->
-            HintFile = hintfile_name(State),
-            ?LOG_WARNING("Hintfile '~ts' failed fold: ~0tp",
+            HintFile = hintfile_name(FS),
+            ?LOG_WARNING("Hintfile '~s' failed fold: ~p\n",
                                      [HintFile, Reason]),
-            fold_keys_loop(State, 0, Fun, Acc);
+            fold_keys_loop(FS, 0, Fun, Acc);
         Acc1 ->
             Acc1
-    end;
-fold_keys(State, Fun, Acc, recovery, _, false) ->
-    HintFile = hintfile_name(State),
-    ?LOG_WARNING("Hintfile '~ts' invalid",
-                             [HintFile]),
-    fold_keys_loop(State, 0, Fun, Acc).
+    end.
 
 -spec mk_filename(string(), integer()) -> string().
 mk_filename(Dirname, Tstamp) ->
@@ -498,19 +487,40 @@ has_hintfile(Filename) ->
 
 %% Return true if there is a hintfile and it has
 %% a valid CRC check
-has_valid_hintfile(State) ->
-    HintFile = hintfile_name(State),
-    case bitcask_io:file_open(HintFile, [readonly, read_ahead]) of
+validate_hintfile(FS) ->
+    HintFile = hintfile_name(FS),
+    Result = case bitcask_io:file_open(HintFile, [readonly, read_ahead]) of
         {ok, HintFd} ->
             try
-                {ok, HintI} = read_file_info(HintFile),
-                HintSize = HintI#file_info.size,
-                hintfile_validate_loop(HintFd, 0, HintSize)
+                case application:get_env(bitcask, require_hint_crc) of
+                    {ok, false} ->
+                        not_required;
+                    _ ->
+                        {ok, HintI} = read_file_info(HintFile),
+                        HintSize = HintI#file_info.size,
+                        {hintfile_validate_loop(HintFd, 0, HintSize), HintFd}
+                end
             after
                 bitcask_io:file_close(HintFd)
             end;
-        _ ->
-            false
+        Error -> Error
+    end,
+
+    case Result of
+        {{true, HintCRC}, HintFd1} ->
+            {valid, {HintFd1, HintCRC}};
+        {{false, HintCRC}, HintFd1} ->
+            {invalid, {HintFd1, HintCRC}};
+        {{error, invalid_hint, HintCRC}, HintFd1} ->
+            {invalid, {HintFd1, HintCRC}};
+        {error, enoent} = Error1 ->
+            ?LOG_WARNING("Validating hintfile '~s' failed: does not exist\n",
+                         [HintFile]),
+            Error1;
+        Error1 ->
+            ?LOG_WARNING("Validating hintfile '~s' failed: '~p'\n",
+                         [HintFile, Error1]),
+            Error1
     end.
 
 hintfile_validate_loop(Fd, CRC0, Rem) ->
@@ -533,16 +543,25 @@ hintfile_validate_loop(Fd, CRC0, Rem) ->
                 true ->
                     ExpectCRC = read_crc(Fd),
                     CRC = erlang:crc32(CRC0, Bytes),
-                    ExpectCRC =:= CRC;
+                    {ExpectCRC =:= CRC, CRC};
                 false ->
                     hintfile_validate_loop(Fd,
                                            erlang:crc32(CRC0, Bytes),
                                            Rem - ReadLen);
                 error ->
-                    false
+                    {error, invalid_hint, CRC0}
             end;
-        _ -> false
+        Error -> Error
     end.
+
+maybe_delete_hintfile(FS, {invalid, {HintFD, _}}) ->
+    bitcask_io:file_close(HintFD),
+    _ = file:delete(bitcask_fileops:hintfile_name(FS)),
+    FS#filestate{hintfd = undefined, hintcrc = 0};
+maybe_delete_hintfile(FS, {valid, {HintFD, HintCRC}}) ->
+    FS#filestate{hintfd = HintFD, hintcrc = HintCRC};
+maybe_delete_hintfile(FS, _) ->
+    FS#filestate{hintfd = undefined, hintcrc = 0}.
 
 read_crc(Fd) ->
     case bitcask_io:file_read(Fd, ?HINT_RECORD_SZ) of
@@ -636,6 +655,8 @@ fold_keys_int_loop(<<Crc32:?CRCSIZEFIELD, Tstamp:?TSTAMPFIELD,
 fold_keys_int_loop(_Bytes, _Fun, Acc, Consumed, Args) ->
     {more, Acc, Consumed, Args}.
 
+%% When calling fold_hintfile, ensure the hintfile has been validated
+%% with validate_hintfile
 fold_hintfile(State, Fun, Acc0) ->
     HintFile = hintfile_name(State),
     case bitcask_io:file_open(HintFile, [readonly, read_ahead]) of
@@ -764,20 +785,7 @@ fold_file_loop(Fd, Type, FoldFn, IntFoldFn, Acc0, Args0, Prev0, ChunkSz0) ->
                     {error, Reason}
             end;
         eof ->
-            %% when we reach the end of the file, if it's a hintfile,
-            %% we need to make sure that require_hint_crc is honored
-            %% (or not as the case may be).
-            case Prev == <<>> andalso Type == hint of
-                false ->
-                    Acc0;
-                true ->
-                    case application:get_env(bitcask, require_hint_crc)  of
-                        {ok, true} ->
-                            {error, {incomplete_hint, 4}};
-                        _ ->
-                            Acc0
-                    end
-            end;
+            Acc0;
         {error, Reason} ->
             {error, Reason}
     end.

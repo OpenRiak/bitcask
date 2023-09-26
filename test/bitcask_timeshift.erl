@@ -72,7 +72,7 @@ timeshift_test2() ->
         Validate = fun(Fname) ->
                            {ok, S} = bitcask_fileops:open_file(Fname),
                            try
-                               ?assert(bitcask_fileops:has_valid_hintfile(S))
+                               ?assertMatch({valid, _}, bitcask_fileops:validate_hintfile(S))
                            after
                                bitcask_fileops:close(S)
                            end

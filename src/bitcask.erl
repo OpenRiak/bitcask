@@ -1,7 +1,7 @@
 %% -------------------------------------------------------------------
 %%
 %% Copyright (c) 2010-2017 Basho Technologies, Inc.
-%% Copyright (c) 2018-2022 Workday, Inc.
+%% Copyright (c) 2018-2023 Workday, Inc.
 %%
 %% This file is provided to you under the Apache License,
 %% Version 2.0 (the "License"); you may not use this file
@@ -1266,13 +1266,15 @@ scan_key_files([Filename | Rest], KeyDir, Acc, CloseFile, KT) ->
                         end,
                         ok
                 end,
-            bitcask_fileops:fold_keys(File, F, undefined, recovery),
-            if CloseFile == true ->
-                    bitcask_fileops:close(File);
+
+            File1 = validate_or_delete_hintfile(File),
+            bitcask_fileops:fold_keys(File1, F, undefined),
+            if CloseFile ->
+                    bitcask_fileops:close(File1);
                true ->
                     ok
             end,
-            scan_key_files(Rest, KeyDir, [File | Acc], CloseFile, KT)
+            scan_key_files(Rest, KeyDir, [File1 | Acc], CloseFile, KT)
     end.
 
 %%
@@ -2040,22 +2042,28 @@ expiry_merge([File | Files], LiveKeyDir, KT, Acc0) ->
                           {KeysExpired + 1, BytesExpired + TotalSz}
                   end
         end,
-    Acc =
-    case bitcask_fileops:fold_keys(File, Fun, {0, 0}, default) of
+
+    File1 = validate_or_delete_hintfile(File),
+    Acc = case bitcask_fileops:fold_keys(File1, Fun, {0, 0}) of
         {error, Reason} ->
             ?LOG_ERROR("Error folding keys for ~0tp: ~0tp",
-                                   [File#filestate.filename,Reason]),
+                                   [File1#filestate.filename, Reason]),
             Acc0;
         {NewKeysExpired, NewBytesExpired} ->
             ?LOG_INFO("All keys expired in: ~0tp scheduling "
                                   "file for deletion",
-                                  [File#filestate.filename]),
+                                  [File1#filestate.filename]),
+
             {FilesRemoved, KeysExpired, BytesExpired} = Acc0,
-            {[File | FilesRemoved],
+            {[File1 | FilesRemoved],
                 KeysExpired + NewKeysExpired,
                 BytesExpired + NewBytesExpired}
     end,
     expiry_merge(Files, LiveKeyDir, KT, Acc).
+
+validate_or_delete_hintfile(FS) ->
+    Result = bitcask_fileops:validate_hintfile(FS),
+    bitcask_fileops:maybe_delete_hintfile(FS, Result).
 
 get_stats_callback(StatsCallback)
     when is_function(StatsCallback) ->
@@ -2339,7 +2347,7 @@ fold_corrupt_file_test2() ->
     close(B4),
 
     %% If record is corrupted, the key should not be loaded.
-    DataList2 = [{<<"k1">>, <<"v1">>}, {<<"k2">>, <<"v2">>}],
+    DataList2 = [{<<"k1">>, <<"v1">>}, {<<"k2">>, <<"v2">>}, {<<"k3">>, <<"v3">>}],
     [File3] = CreateFun(DataList2),
     {ok, File3Before} = file:read_file(File3),
     Hintfile = bitcask_fileops:hintfile_name(File3),
@@ -2349,13 +2357,13 @@ fold_corrupt_file_test2() ->
     ?assertEqual(false, filelib:is_regular(Hintfile)),
     %% Change last byte of value for k2 to invalidate its CRC.
     {ok, F3} = file:open(File3, [binary, read, write]),
-    ok = file:pwrite(F3, {eof, -1}, <<"3">>),
+    ok = file:pwrite(F3, {bof, 5}, <<"3">>),
     ok = file:close(F3),
     {ok, File3After} = file:read_file(File3),
     ?assert(File3Before /= File3After),
     B5 = bitcask:open(TestDir),
     LoadedKeys = bitcask:list_keys(B5),
-    ?assertEqual([<<"k1">>], LoadedKeys),
+    ?assertEqual([<<"k2">>, <<"k3">>], lists:sort(LoadedKeys)),
     bitcask:close(B5),
 
     ok.
@@ -3055,8 +3063,6 @@ truncated_datafile_test_() ->
 truncated_datafile_test2() ->
     %% Mostly stolen from frag_status_test()....
     Dir = setup_testfolder("bc.test.truncdata"),
-    os:cmd("rm -rf " ++ Dir),
-    os:cmd("mkdir " ++ Dir),
     B1 = bitcask:open(Dir, [read_write]),
     [ok = bitcask:put(B1, <<"k">>, <<X:32>>) || X <- lists:seq(1, 100)],
     ok = bitcask:close(B1),
@@ -3071,36 +3077,68 @@ truncated_datafile_test2() ->
     ok = bitcask:close(B2),
     ok.
 
-truncated_hintfile_test() ->
+hintfile_tests_() ->
+    [{timeout, 60, fun truncated_hintfile_test/0},
+     {timeout, 60, fun missing_hintfile_test/0},
+     {timeout, 60, fun corrupt_hintfile_test/0}
+    ].
+
+setup_hintfile() ->
     Dir = setup_testfolder("bc.test.trunchint"),
-    os:cmd("rm -rf " ++ Dir),
-    os:cmd("mkdir " ++ Dir),
     B1 = bitcask:open(Dir, [read_write]),
     [ok = bitcask:put(B1, <<"k">>, <<X:32>>) || X <- lists:seq(1, 100)],
+
+    State = get_state(B1),
+    FS = State#bc_state.write_file,
     ok = bitcask:close(B1),
-
     [HintFile|_] = filelib:wildcard(Dir ++ "/*.hint"),
-    %% 1900 was determined via file inspection, may drift with version
-    truncate_file(HintFile, 1900),
 
-    B2 = bitcask:open(Dir, [read_write]),
-    {FS, _} = get_filestate(1, get(B2)),
+    %% Reads and validates hintfile
+    #filestate{hintfd = HintFD, hintcrc = HintCRC} = FS1 = bitcask:validate_or_delete_hintfile(FS),
+    ?assertNot(HintFD == undefined),
+    ?assert(HintCRC > 0),
+    100 = bitcask_fileops:fold_keys(FS, fun(_, _, _, Acc) -> Acc + 1 end,
+                                    0),
+    true = bitcask_fileops:is_file(HintFile),
+    {FS1, HintFile}.
 
-    {ok, OldVal} = application:get_env(bitcask, require_hint_crc),
-    try
-        application:set_env(bitcask, require_hint_crc, true),
-        {error, {incomplete_hint, 4}} = bitcask_fileops:fold_keys(
-                                          FS, fun(_, _, _, Acc) -> Acc + 1 end,
-                                          0, hintfile),
 
-        application:set_env(bitcask, require_hint_crc, false),
+missing_hintfile_test() ->
+    {FS, HintFile} = setup_hintfile(),
+    ok = file:delete(HintFile),
+    false = bitcask_fileops:is_file(HintFile),
 
-        100 = bitcask_fileops:fold_keys(FS, fun(_, _, _, Acc) -> Acc + 1 end,
-                                        0, hintfile),
-        ok
-    after
-        application:set_env(bitcask, require_hint_crc, OldVal)
-    end.
+    %% Attempts to validate hintfile and deletes it, still returns
+    %% correct result from data file.
+    #filestate{hintfd = undefined, hintcrc = 0} = FS2 = bitcask:validate_or_delete_hintfile(FS),
+    false = bitcask_fileops:is_file(HintFile),
+    100 = bitcask_fileops:fold_keys(FS2, fun(_, _, _, Acc) -> Acc + 1 end,
+                                    0),
+    ok.
+
+corrupt_hintfile_test() ->
+    {FS, HintFile} = setup_hintfile(),
+    truncate_file(HintFile, {bof, 1}),
+
+    %% Attempts to validate hintfile and deletes it, still returns
+    %% correct result from data file.
+    #filestate{hintfd = undefined, hintcrc = 0} = FS2 = bitcask:validate_or_delete_hintfile(FS),
+    false = bitcask_fileops:is_file(HintFile),
+    100 = bitcask_fileops:fold_keys(FS2, fun(_, _, _, Acc) -> Acc + 1 end,
+                                    0),
+    ok.
+
+truncated_hintfile_test() ->
+    {FS, HintFile} = setup_hintfile(),
+    truncate_file(HintFile, {eof, -(?CRCSIZEFIELD + 8)}),
+
+    %% Attempts to validate hintfile and deletes it, still returns
+    %% correct result from data file.
+    #filestate{hintfd = undefined, hintcrc = 0} = FS2 = bitcask:validate_or_delete_hintfile(FS),
+    false = bitcask_fileops:is_file(HintFile),
+    100 = bitcask_fileops:fold_keys(FS2, fun(_, _, _, Acc) -> Acc + 1 end,
+                                    0),
+    ok.
 
 trailing_junk_big_datafile_test_() ->
     {timeout, 60, fun trailing_junk_big_datafile_test2/0}.
@@ -3108,8 +3146,6 @@ trailing_junk_big_datafile_test_() ->
 trailing_junk_big_datafile_test2() ->
     Dir = setup_testfolder("bc.test.trailingdata"),
     NumKeys = 400,
-    os:cmd("rm -rf " ++ Dir),
-    os:cmd("mkdir " ++ Dir),
     B1 = bitcask:open(Dir, [read_write, {max_file_size, 1024*1024*1024}]),
     [ok = bitcask:put(B1, <<"k", X:32>>, <<X:1024>>) || X <- lists:seq(1, NumKeys)],
     ok = bitcask:close(B1),
@@ -3139,8 +3175,6 @@ truncated_merge_test_() ->
 
 truncated_merge_test2() ->
     Dir = setup_testfolder("bc.test.truncmerge"),
-    os:cmd("rm -rf " ++ Dir),
-    os:cmd("mkdir " ++ Dir),
 
     %% Initialize dataset with max_file_size set to 1 so that each file will
     %% only contain a single key.
@@ -3154,8 +3188,8 @@ truncated_merge_test2() ->
     %% Verify number of files in directory
     5 = length(readable_files(Dir)),
 
-    [Data1, Data2, _, _, Data5|_] = filelib:wildcard(Dir ++ "/*.data"),
-    [_, _, Hint3, Hint4|_] = filelib:wildcard(Dir ++ "/*.hint"),
+    [Data1, Data2, _, _, Data5] = filelib:wildcard(Dir ++ "/*.data"),
+    [_, _, Hint3, Hint4, _] = filelib:wildcard(Dir ++ "/*.hint"),
 
     %% Truncate 1st after data file's header, read by bitcask_fileops:fold/3).
     %% Truncate 2nd in the middle of header, which provokes another
@@ -3170,31 +3204,37 @@ truncated_merge_test2() ->
     ok = truncate_file(Hint4, 5),
     ok = corrupt_file(Data5, 15, <<"!">>),
     %% Merge everything
-    M = bitcask:open(Dir),
-    ok = merge(Dir),
-    bitcask:close(M),
-    ok = bitcask_merge_delete:testonly__delete_trigger(),
+    {ok, OldVal} = application:get_env(bitcask, require_hint_crc),
+    try
+        application:set_env(bitcask, require_hint_crc, true),
+        M = bitcask:open(Dir),
+        ok = merge(Dir),
+        bitcask:close(M),
+        ok = bitcask_merge_delete:testonly__delete_trigger(),
 
-    %% Verify we've now only got one file
-    1 = length(readable_files(Dir)),
+        %% Verify there's only the new merged data file left.
+        1 = length(readable_files(Dir)),
 
-    %% Make sure all corrupted data is missing, all good data is present
-    B = bitcask:open(Dir),
-    BadKeys = [<<"k">>, <<"k2">>,               % Trunc of Data1 & Data2
-               <<"k99">>],                      % Trunc of Data5
-    {BadData, GoodData} =
-        lists:partition(fun({K, _V}) -> lists:member(K, BadKeys) end, DataSet),
-    lists:foldl(fun({K, _V} = KV, _) ->
-                        {KV, not_found} = {KV, bitcask:get(B, K)}
-                end, undefined, BadData),
-    lists:foldl(fun({K, V} = KV, _) ->
-                        {KV, {ok, V}} = {KV, bitcask:get(B, K)}
-                end, undefined, GoodData),
-    ok = bitcask:close(B).
+        %% Make sure all corrupted data is missing, all good data is present
+        B = bitcask:open(Dir),
+        BadKeys = [<<"k">>, <<"k2">>,               % Trunc of Data1 & Data2
+                   <<"k99">>],                      % Trunc of Data5
+        {BadData, GoodData} =
+            lists:partition(fun({K, _V}) -> lists:member(K, BadKeys) end, DataSet),
+        lists:foldl(fun({K, _V} = KV, _) ->
+                            {KV, not_found} = {KV, bitcask:get(B, K)}
+                    end, undefined, BadData),
+        lists:foldl(fun({K, V} = KV, _) ->
+                            {KV, {ok, V}} = {KV, bitcask:get(B, K)}
+                    end, undefined, GoodData),
+        ok = bitcask:close(B)
+    after
+        application:set_env(bitcask, require_hint_crc, OldVal)
+    end.
 
 truncate_file(Path, Offset) ->
     {ok, FH} = file:open(Path, [read, write]),
-    {ok, Offset} = file:position(FH, Offset),
+    {ok, _Offset} = file:position(FH, Offset),
     ok = file:truncate(FH),
     file:close(FH).
 
@@ -3491,8 +3531,6 @@ zap_hints_no_tombstones_after_reopen_test_() ->
 no_tombstones_after_reopen_test2(DeleteHintFilesP) ->
     Dir = setup_testfolder("bc.test.truncmerge"),
     MaxFileSize = 100,
-    os:cmd("rm -rf " ++ Dir),
-    os:cmd("mkdir " ++ Dir),
 
     %% Initialize dataset with max_file_size set to 1 so that each file will
     %% only contain a single key.
@@ -3711,10 +3749,11 @@ merge_batch_test2() ->
         bitcask:close(B)
     end.
 
-merge_expired_test_() ->
-    {timeout, 120, fun merge_expired_test2/0}.
+merge_expired_tests_() ->
+    [{timeout, 120, fun merge_expired_with_hintfiles_test/0},
+     {timeout, 120, fun merge_expired_without_hintfiles_test/0}].
 
-merge_expired_test2() ->
+merge_expired_with_hintfiles_test() ->
     Dir = setup_testfolder("bc.merge.expired.files"),
     NKeys = 10,
     KF = fun(N) -> <<N:8/integer>> end,
@@ -3735,6 +3774,31 @@ merge_expired_test2() ->
     bitcask:close(B),
     ?assertEqual(ExpectedKeys, ActualKeys1),
     ?assertEqual(ExpectedKeys, ActualKeys2).
+
+merge_expired_without_hintfiles_test() ->
+    Dir = setup_testfolder("bc.merge.expired.files1"),
+    NKeys = 10,
+    KF = fun(N) -> <<N:8/integer>> end,
+    KVGen = fun(S, E) ->
+                    [{KF(N), <<"v">>} || N <- lists:seq(S, E)]
+            end,
+    DataSet = KVGen(1, 3),
+    B = init_dataset(Dir, [{max_file_size, 1}], DataSet),
+    ok = bitcask:delete(B, KF(1)),
+    put_kvs(B, KVGen(4, NKeys)),
+    % Merge away the first 4 files as if they were completely expired,
+    FirstFiles = [Dir ++ "/" ++ integer_to_list(N) ++ ".bitcask.data" ||
+                  N <- lists:seq(1, 4)],
+    DeletedHints = [file:delete(H) || H <- filelib:wildcard(Dir ++ "/*.hint")],
+    true = lists:all(fun(R) -> R == ok end, DeletedHints),
+    ?assertEqual(ok, bitcask:merge(Dir, [], {FirstFiles, FirstFiles})),
+    ExpectedKeys = [KF(N) || N <- lists:seq(4, NKeys)],
+    ActualKeys1 = lists:sort(bitcask:list_keys(B)),
+    ActualKeys2 = lists:sort(bitcask:fold(B, fun(K,_V,A)->[K|A] end, [])),
+    bitcask:close(B),
+    ?assertEqual(ExpectedKeys, ActualKeys1),
+    ?assertEqual(ExpectedKeys, ActualKeys2).
+
 
 max_merge_size_test_() ->
     {timeout, 120, fun max_merge_size_test2/0}.

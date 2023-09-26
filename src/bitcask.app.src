@@ -1,6 +1,6 @@
 {application, bitcask, [
     {description, "Yet another key/value storage engine"},
-    {vsn, "2.1.0.2"},
+    {vsn, "2.1.0.3"},
     {modules, []},
     {registered, []},
     {applications, [kernel, stdlib]},
@@ -30,7 +30,7 @@
         %% old hint files will still be accepted without them.
         %% It is safe to set this true for new deployments and will
         %% become the default setting in a future release.
-        {require_hint_crc, false},
+        {require_hint_crc, true},
 
         %% Merge window. Span of hours during which merge is acceptable.
         %% * {Start, End} - Hours during which merging is permitted

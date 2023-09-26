@@ -24,9 +24,6 @@
 
 -compile([export_all, nowarn_export_all]).
 
-%% Uncomment this to get the spawned process messages.
--define(NODEBUG, true).
-
 lock_cannot_be_obtained_on_already_locked_file_within_same_os_process_test() ->
     Dir = bitcask:create_test_dir(),
     Filename = bitcask_lockops:lock_filename(write,Dir),
