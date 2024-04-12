@@ -1,7 +1,7 @@
 %% -------------------------------------------------------------------
 %%
 %% Copyright (c) 2010-2017 Basho Technologies, Inc.
-%% Copyright (c) 2022-2023 Workday, Inc.
+%% Copyright (c) 2022-2024 Workday, Inc.
 %%
 %% This file is provided to you under the Apache License,
 %% Version 2.0 (the "License"); you may not use this file
@@ -407,6 +407,8 @@ read(#filestate { fd = FD }, Offset, Size) ->
 
 %% @doc Call the OS's fsync(2) system call on the cask and hint files.
 -spec sync(#filestate{}) -> ok.
+sync(#filestate { mode = read_write, fd = Fd, hintfd = undefined }) ->
+    ok = bitcask_io:file_sync(Fd);
 sync(#filestate { mode = read_write, fd = Fd, hintfd = HintFd }) ->
     ok = bitcask_io:file_sync(Fd),
     ok = bitcask_io:file_sync(HintFd).

@@ -1,7 +1,7 @@
 %% -------------------------------------------------------------------
 %%
 %% Copyright (c) 2010-2017 Basho Technologies, Inc.
-%% Copyright (c) 2018-2023 Workday, Inc.
+%% Copyright (c) 2018-2024 Workday, Inc.
 %%
 %% This file is provided to you under the Apache License,
 %% Version 2.0 (the "License"); you may not use this file
@@ -3019,14 +3019,14 @@ no_pending_delete_bottleneck_test2() ->
         [begin
              ?assertEqual(ok, bitcask:delete(B1, K))
          end || {K, _} <- Data],
-        bitcask:merge(Dir1),
+        ok = bitcask:merge(Dir1),
 
         bitcask:iterator(B2, -1, -1),
         put_till_frozen(B2),
         [begin
              ?assertEqual(ok, bitcask:delete(B2, K))
          end || {K, _} <- Data],
-        bitcask:merge(Dir2),
+        ok = bitcask:merge(Dir2),
         bitcask:iterator_release(B2),
 
         %% Timing is everything. This test will timeout in 60 seconds.
@@ -3282,7 +3282,7 @@ leak_t1() ->
     [bitcask:delete(Ref, <<X:32>>) || X <- lists:seq(1, DelKeys)],
     io:format("After deleting ~p keys, lsof says: ~s", [DelKeys, Used()]),
 
-    bitcask:merge(Dir),
+    ok = bitcask:merge(Dir),
     io:format("After merging, lsof says: ~s", [Used()]),
 
     io:format("Q: Are all keys fetchable? ..."),
@@ -3618,7 +3618,7 @@ no_crash_on_key_transform_test() ->
                      default_dataset()),
     bitcask:list_keys(B),
     bitcask:fold(B, fun(K, _V, Acc0) -> [K|Acc0] end, [], -1, -1, true),
-    bitcask:merge(Dir, [{key_transform, CrashTx}]),
+    ok = bitcask:merge(Dir, [{key_transform, CrashTx}]),
     ok = bitcask:close(B),
     B2 = bitcask:open(Dir, [{key_transform, CrashTx}]),
     ok = bitcask:close(B2),

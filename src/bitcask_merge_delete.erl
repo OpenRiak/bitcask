@@ -1,6 +1,7 @@
 %% -------------------------------------------------------------------
 %%
 %% Copyright (c) 2012-2017 Basho Technologies, Inc.
+%% Copyright (c) 2024 Workday, Inc.
 %%
 %% This file is provided to you under the Apache License,
 %% Version 2.0 (the "License"); you may not use this file
@@ -182,7 +183,8 @@ delete_files(Files) ->
 -ifdef(TEST).
 
 multiple_merges_during_fold_test_() ->
-    {timeout, 60, fun multiple_merges_during_fold_body/0}.
+    [{timeout, 60, fun multiple_merges_during_fold_body/0},
+    {timeout, 60, fun multiple_merges_during_fold_body_with_corrupt_hintfiles/0}].
 
 multiple_merges_during_fold_body() ->
     Dir = filename:join(?TEST_FILEPATH, "bc.multiple-merges-fold"),
@@ -212,7 +214,7 @@ multiple_merges_during_fold_body() ->
     PutSome(),
     Count1 = merge_until(Dir, 0, CountSetuids),
     PutSome(),
-    bitcask:merge(Dir),
+    ok = bitcask:merge(Dir),
     PutSome(),
     merge_until(Dir, Count1, CountSetuids),
 
@@ -223,8 +225,44 @@ multiple_merges_during_fold_body() ->
 
     ok.
 
+multiple_merges_during_fold_body_with_corrupt_hintfiles() ->
+    Dir = filename:join(?TEST_FILEPATH, "bc.multiple-merges-fold-hintfile"),
+    B = bitcask:open(Dir, [read_write, {max_file_size, 50}]),
+    PutSome = fun() ->
+                      [bitcask:put(B, <<X:32>>, <<"yo this is a value">>) ||
+                          X <- lists:seq(1,5)]
+              end,
+    PutSome(),
+    PutSome(),
+    Bstuff = get(B),
+    FoldFun = fun(_K, _V, 0) ->
+                      receive go_ahead -> ok end,
+                      1;
+                 (_K, _V, 1) ->
+                      1
+              end,
+    _SlowPid = spawn(fun() ->
+                            put(B, Bstuff),
+                            bitcask:fold(B, FoldFun, 0)
+                    end),
+    CountSetuids = fun() ->
+                           Fs = filelib:wildcard(Dir ++ "/*"),
+                           length([F || F <- Fs,
+                                        bitcask:has_pending_delete_bit(F)])
+                   end,
+    PutSome(),
+    _DeletedHints = [file:delete(H) || H <- filelib:wildcard(Dir ++ "/*.hint")],
+    _Count1 = merge_until(Dir, 0, CountSetuids),
+    PutSome(),
+    ok = bitcask:merge(Dir),
+
+    ok = ?MODULE:testonly__delete_trigger(),
+    0 = CountSetuids(),
+
+    ok.
+
 merge_until(Dir, MinCount, CountSetuids) ->
-    bitcask:merge(Dir),
+    ok = bitcask:merge(Dir),
     Count = CountSetuids(),
     if (Count > MinCount) ->
             Count;
@@ -571,7 +609,7 @@ fork_merge(H, Dir) ->
 merge_these(_H, TestDir, Ids) ->
     Files = [lists:flatten(io_lib:format("~s/~w.bitcask.data", [TestDir,Id])) ||
                 Id <- Ids],
-    bitcask:merge(TestDir, [], Files).
+    ok = bitcask:merge(TestDir, [], Files).
 
 incr_clock() ->
     bitcask_time:test__incr_fudge(1).
