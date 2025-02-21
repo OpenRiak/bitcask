@@ -1,6 +1,6 @@
 %% -------------------------------------------------------------------
 %%
-%% Copyright (c) 2018-2022 Workday, Inc.
+%% Copyright (c) 2018-2025 Workday, Inc.
 %%
 %% This file is provided to you under the Apache License,
 %% Version 2.0 (the "License"); you may not use this file
@@ -19,13 +19,20 @@
 %% -------------------------------------------------------------------
 -module(bitcask_lockops_tests).
 
+%% Warning: Without 'export_all', the first test will fail (that is, it
+%% succeeds in acquiring the lock on the second call). This happens even if
+%% the tests and external-vm functions are explicitly exported. Clearly
+%% something funky is going on in eunit.hrl.
+-compile([export_all, nowarn_export_all]).
+
+%% Comment this out to see output from the spawned process.
+-define(NODEBUG, true).
+
 -include_lib("eunit/include/eunit.hrl").
 -include("bitcask.hrl").
 
--compile([export_all, nowarn_export_all]).
-
 lock_cannot_be_obtained_on_already_locked_file_within_same_os_process_test() ->
-    Dir = bitcask:create_test_dir(),
+    Dir = create_test_dir(?FUNCTION_NAME),
     Filename = bitcask_lockops:lock_filename(write,Dir),
     ok = file_delete(Filename),
     ok = file:write_file(Filename, ""),
@@ -33,7 +40,7 @@ lock_cannot_be_obtained_on_already_locked_file_within_same_os_process_test() ->
     ?assertMatch({error, locked}, bitcask_lockops:acquire(write, Dir)).
 
 lock_can_be_obtained_on_already_locked_file_is_unlocked_test() ->
-    Dir = bitcask:create_test_dir(),
+    Dir = create_test_dir(?FUNCTION_NAME),
     Filename = bitcask_lockops:lock_filename(write,Dir),
     ok = file_delete(Filename),
     ok = file:write_file(Filename, ""),
@@ -42,17 +49,18 @@ lock_can_be_obtained_on_already_locked_file_is_unlocked_test() ->
     ?assertMatch({ok, _}, bitcask_lockops:acquire(write, Dir)).
 
 lock_cannot_be_obtained_on_already_locked_file_across_os_process_test() ->
-    DbDir = filename:absname(bitcask:create_test_dir()),
+    DbDir = filename:absname(create_test_dir(?FUNCTION_NAME)),
     %% start another erlang vm that will open the DB and obtain a write
     %% lock, then, when we try to obtain a write lock on the current vm
     %% it should fail.
+    %% ToDo: Post OTP 24 use the 'peer' module, too much hassle before then.
     {?MODULE, _, TBeam} = code:get_object_code(?MODULE),
     {bitcask, _, BBeam} = code:get_object_code(bitcask),
     Tbin = filename:dirname(TBeam),
     Bbin = filename:dirname(BBeam),
     Erl = filename:join([code:root_dir(), "bin", "erl"]),
     Cmd = lists:flatten([
-        Erl, " -pa ", Bbin, " -pa ", Tbin, " -noinput -noshell -eval"
+        "'", Erl, "' -pa '", Bbin, "' -pa '", Tbin, "' -noinput -noshell -eval"
         " 'bitcask_lockops_tests:bitcask_locker_vm_main(\"", DbDir, "\").'"
     ]),
     ?debugFmt("~n= COMMAND: ~ts", [Cmd]),
@@ -62,13 +70,13 @@ lock_cannot_be_obtained_on_already_locked_file_across_os_process_test() ->
     DB = bitcask:open(DbDir, [read_write]),
     ?assertMatch({error, {error, locked}}, bitcask:put(DB, <<"k">>, <<"v">>)),
     receive
-        {'DOWN', MonRef, _Type, _Object, _Info} = Msg ->
-            ?debugFmt("~n= RECEIVE: ~0tp", [Msg])
+        {'DOWN', MonRef, _Type, _Object, _Info} = _Msg ->
+            ?debugFmt("~n= RECEIVE: ~p~n", [_Msg])
     end.
 
 run_vm_process(Command) ->
-    Output = ?cmd(Command),
-    ?debugFmt("~n= OUTPUT ~0tp: ~ts", [erlang:self(), Output]).
+    _Output = ?cmd(Command),
+    ?debugFmt("~n= CMD OUTPUT: ~s~n", [_Output]).
 
 %% entry function for another vm to lock a bitcask DB
 bitcask_locker_vm_main(DbDir) ->
@@ -91,3 +99,7 @@ file_delete(Filename) ->
             ok
     end.
 
+-spec create_test_dir(Label :: atom() | string()) -> string().
+%% Creates a new, empty, directory for testing.
+create_test_dir(Label) ->
+    bitcask:setup_testfolder(io_lib:format("bc.lockops.~s", [Label])).

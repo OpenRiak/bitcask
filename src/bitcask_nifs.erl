@@ -61,11 +61,6 @@
     file_seekbof/1,
     file_truncate/1
 ]).
--ifdef(BASHO_CHECK).
-%% Dialyzer and XRef won't recognize 'on_load' as using the function and
-%% will complain about it.
--export([init_nif_lib/0]).
--endif.
 
 %% Make sure only a consistent set of test macros are defined so we don't
 %% have to keep checking them all repeatedly.

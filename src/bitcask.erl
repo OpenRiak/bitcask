@@ -1,7 +1,7 @@
 %% -------------------------------------------------------------------
 %%
 %% Copyright (c) 2010-2017 Basho Technologies, Inc.
-%% Copyright (c) 2018-2024 Workday, Inc.
+%% Copyright (c) 2018-2025 Workday, Inc.
 %%
 %% This file is provided to you under the Apache License,
 %% Version 2.0 (the "License"); you may not use this file
@@ -95,7 +95,7 @@
 %% This atom is the signal that it failed but is harmless in this situation.
 -define(POLL_FOR_MERGE_LOCK_PSEUDOFAILURE, pseudo_failure).
 
-%% @type bc_state().
+%% Type bc_state().
 -record(bc_state, {dirname :: string(),
                    write_file :: 'fresh' | 'undefined' | #filestate{},     % File for writing
                    write_lock :: 'undefined' | reference(),     % Reference to write lock
@@ -168,9 +168,9 @@ open(Dirname, Opts) ->
                   ok;
               not_stale ->
                   ?LOG_ERROR(
-                      "Attempted to obtain the Bitcask write lock for '~ts' but"
-                      " another Bitcask DB has the lock! Continuing but all"
-                      " write operations will fail.", [Dirname])
+                      "Attempted to obtain the Bitcask write lock for '~ts'"
+                      " but another Bitcask DB has the lock! Continuing but"
+                      " all write operations will fail.", [Dirname])
           end,
           fresh;
         false ->
@@ -2190,9 +2190,16 @@ roundtrip_test_() ->
     {timeout, 60, fun roundtrip_test2/0}.
 
 setup_testfolder(Path) ->
-    DN = filename:join(?TEST_FILEPATH, Path),
-    os:cmd("rm -rf " ++ DN),
-    DN.
+    Target = filename:join(?TEST_FILEPATH, Path),
+    case filelib:is_file(Target) of
+        true ->
+            ?assertMatch(ok, file:del_dir_r(Target), Target),
+            ?assertMatch(ok, file:make_dir(Target), Target);
+        _ ->
+            Dummy = filename:join(Target, "dummy"),
+            ?assertMatch(ok, filelib:ensure_dir(Dummy), Dummy)
+    end,
+    Target.
 
 roundtrip_test2() ->
     FN = setup_testfolder("bc.test.roundtrip"),

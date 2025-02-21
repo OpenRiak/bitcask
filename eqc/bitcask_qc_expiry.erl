@@ -26,9 +26,16 @@
 -include_lib("eqc/include/eqc.hrl").
 -include_lib("eunit/include/eunit.hrl").
 -include("include/bitcask.hrl").
--include("stacktrace.hrl").
 
 -compile([export_all, nowarn_export_all]).
+
+-ifdef(OTP_RELEASE). %% This implies 21 or higher
+-define(_exception_(Class, Reason, StackToken), Class:Reason:StackToken).
+-define(_get_stacktrace_(StackToken), StackToken).
+-else.
+-define(_exception_(Class, Reason, _), Class:Reason).
+-define(_get_stacktrace_(_), erlang:get_stacktrace()).
+-endif.
 
 keys() ->
     eqc_gen:non_empty(list(eqc_gen:non_empty(binary()))).
