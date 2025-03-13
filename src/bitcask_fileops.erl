@@ -1,7 +1,7 @@
 %% -------------------------------------------------------------------
 %%
 %% Copyright (c) 2010-2017 Basho Technologies, Inc.
-%% Copyright (c) 2022-2024 Workday, Inc.
+%% Copyright (c) 2022-2025 Workday, Inc.
 %%
 %% This file is provided to you under the Apache License,
 %% Version 2.0 (the "License"); you may not use this file
@@ -79,8 +79,6 @@
 -include_lib("kernel/include/file.hrl").
 -include_lib("kernel/include/logger.hrl").
 -include("bitcask.hrl").
-
--define(HINT_RECORD_SZ, 18). % Tstamp(4) + KeySz(2) + TotalSz(4) + Offset(8)
 
 -type filestate() :: #filestate{}.
 
@@ -525,36 +523,39 @@ validate_hintfile(FS) ->
             Error1
     end.
 
-hintfile_validate_loop(Fd, CRC0, Rem) ->
-    {ReadLen, HasCRC} =
-        case Rem =< ?CHUNK_SIZE of
-            true ->
-                case Rem < ?HINT_RECORD_SZ of
-                    true ->
-                        {0, error};
-                    false ->
-                        {Rem - ?HINT_RECORD_SZ, true}
-                end;
-            false ->
-                {?CHUNK_SIZE, false}
-        end,
 
-    case bitcask_io:file_read(Fd, ReadLen) of
+hintfile_validate_loop(Fd, CRC0, BytesLeft) when BytesLeft >= ?CHUNK_SIZE + ?HINT_RECORD_SZ ->
+    case bitcask_io:file_read(Fd, ?CHUNK_SIZE) of
         {ok, Bytes} ->
-            case HasCRC of
-                true ->
-                    ExpectCRC = read_crc(Fd),
-                    CRC = erlang:crc32(CRC0, Bytes),
-                    {ExpectCRC =:= CRC, CRC};
-                false ->
-                    hintfile_validate_loop(Fd,
-                                           erlang:crc32(CRC0, Bytes),
-                                           Rem - ReadLen);
-                error ->
-                    {error, invalid_hint, CRC0}
-            end;
-        Error -> Error
+            hintfile_validate_loop(Fd,
+                                  erlang:crc32(CRC0, Bytes),
+                                  BytesLeft - ?CHUNK_SIZE);
+        Error ->
+            Error
+    end;
+hintfile_validate_loop(_Fd, CRC0, BytesLeft) when ?HINT_RECORD_SZ > BytesLeft ->
+    {error, invalid_hint, CRC0};
+hintfile_validate_loop(Fd, CRC0, BytesLeft) ->
+    %% Validate CRC
+    case bitcask_io:file_read(Fd, BytesLeft) of
+        {ok, Bytes} ->
+            DataSize = BytesLeft - ?HINT_RECORD_SZ,
+            <<Data:DataSize/binary, HintCRCBytes:?HINT_RECORD_SZ/binary>> = Bytes,
+            HintCRC = get_crc_from_binary(HintCRCBytes),
+            CRC = erlang:crc32(CRC0, Data),
+            {HintCRC =:= CRC, CRC};
+        Error ->
+            Error
     end.
+
+get_crc_from_binary(<<0:?TSTAMPFIELD,
+                      0:?KEYSIZEFIELD,
+                      ExpectCRC:?TOTALSIZEFIELD,
+                      _:?TOMBSTONEFIELD_V2,
+                      _:?OFFSETFIELD_V2>>) ->
+    ExpectCRC;
+get_crc_from_binary(_) ->
+    no_crc.
 
 maybe_delete_hintfile(FS, {invalid, {HintFD, _}}) ->
     bitcask_io:file_close(HintFD),

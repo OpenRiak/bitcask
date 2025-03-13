@@ -1,6 +1,7 @@
 %% -------------------------------------------------------------------
 %%
 %% Copyright (c) 2010-2017 Basho Technologies, Inc.
+%% Copyright (c) 2025 Workday, Inc.
 %%
 %% This file is provided to you under the Apache License,
 %% Version 2.0 (the "License"); you may not use this file
@@ -82,6 +83,13 @@
 -define(MAXOFFSET_V2, 16#7fffffffffffffff). % max 63-bit unsigned
 
 %% for hintfile validation
+-define(HINT_RECORD_BITS, (?TSTAMPFIELD
+    + ?KEYSIZEFIELD + ?TOTALSIZEFIELD + ?TOMBSTONEFIELD_V2 + ?OFFSETFIELD_V2)).
+-if(((?HINT_RECORD_BITS) rem 8) =/= 0).
+-error("Bad HINT_RECORD_BITS calculation").
+-endif.
+-define(HINT_RECORD_SZ, (?HINT_RECORD_BITS div 8)).
+
 -define(CHUNK_SIZE, 65535).
 -define(MIN_CHUNK_SIZE, 1024).
 -define(MAX_CHUNK_SIZE, 134217728).

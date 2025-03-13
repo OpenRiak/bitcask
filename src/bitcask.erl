@@ -2229,7 +2229,7 @@ list_data_files_test_() ->
 
 list_data_files_test2() ->
     DN = setup_testfolder("bc.test.list"),
-    os:cmd("mkdir -p " ++ DN),
+    os:cmd("mkdir -p '" ++ DN ++ "'"),
 
     %% Generate a list of files from 8->12
     ExpFiles = [?FMT(DN ++ "/~w.bitcask.data", [I]) ||
@@ -2255,7 +2255,7 @@ list_data_files_race_test() ->
     WriteFiles = fun(S,E) ->
                          [WriteFile(N) || N <- lists:seq(S, E)]
                  end,
-    os:cmd("rm -rf " ++ Dir ++ "; mkdir -p " ++ Dir),
+    os:cmd("rm -rf '" ++ Dir ++ "'; mkdir -p '" ++ Dir ++ "'"),
     WriteFiles(1,5),
     % Faking 4 as merge file, 5 as write file,
     % then switching to 6 as merge, 7 as write
@@ -2642,6 +2642,22 @@ merge_test2() ->
                         ?assertEqual({K, {ok, V}}, {K, R})
                 end, undefined, default_dataset()),
     ok = bitcask:close(B).
+
+merge_wrap_test_() ->
+    [{timeout, 120, fun test_merge_wrap/0}].
+
+test_merge_wrap() ->
+    Dir = setup_testfolder("bc.test.merge_wrap"),
+    MaxFileSize = 100,
+    NumKeys = 50,
+
+    B1 = bitcask:open(Dir, [read_write, {max_file_size, MaxFileSize * 10}]),
+    [ok = bitcask:put(B1, <<N:32>>, crypto:strong_rand_bytes(MaxFileSize div 2))
+        || N <- lists:seq(1, NumKeys)],
+    ok = bitcask:merge(Dir, [{max_file_size, MaxFileSize}]), %% This will trigger a wrap
+    Keys = bitcask:fold(B1, fun(K, _V, Acc0) -> [K|Acc0] end, [], -1, -1, true),
+    ?assertEqual(length(Keys), NumKeys),
+    bitcask:close(B1).
 
 bitfold_test_() ->
     {timeout, 60, fun bitfold_test2/0}.
@@ -3084,10 +3100,11 @@ truncated_datafile_test2() ->
     ok = bitcask:close(B2),
     ok.
 
-hintfile_tests_() ->
-    [{timeout, 60, fun truncated_hintfile_test/0},
-     {timeout, 60, fun missing_hintfile_test/0},
-     {timeout, 60, fun corrupt_hintfile_test/0}
+hintfile_test_() ->
+    [{timeout, 60, fun test_truncated_hintfile/0},
+     {timeout, 60, fun test_missing_hintfile/0},
+     {timeout, 60, fun test_corrupt_hintfile/0},
+     {timeout, 60, fun test_ensure_valid_through_chunks/0}
     ].
 
 setup_hintfile() ->
@@ -3110,7 +3127,7 @@ setup_hintfile() ->
     {FS1, HintFile}.
 
 
-missing_hintfile_test() ->
+test_missing_hintfile() ->
     {FS, HintFile} = setup_hintfile(),
     ok = file:delete(HintFile),
     false = bitcask_fileops:is_file(HintFile),
@@ -3119,11 +3136,11 @@ missing_hintfile_test() ->
     %% correct result from data file.
     #filestate{hintfd = undefined, hintcrc = 0} = FS2 = bitcask:validate_or_delete_hintfile(FS),
     false = bitcask_fileops:is_file(HintFile),
-    100 = bitcask_fileops:fold_keys(FS2, fun(_, _, _, Acc) -> Acc + 1 end,
-                                    0),
+    ?assertEqual(100,
+        bitcask_fileops:fold_keys(FS2, fun(_, _, _, Acc) -> Acc + 1 end, 0)),
     ok.
 
-corrupt_hintfile_test() ->
+test_corrupt_hintfile() ->
     {FS, HintFile} = setup_hintfile(),
     truncate_file(HintFile, {bof, 1}),
 
@@ -3131,11 +3148,11 @@ corrupt_hintfile_test() ->
     %% correct result from data file.
     #filestate{hintfd = undefined, hintcrc = 0} = FS2 = bitcask:validate_or_delete_hintfile(FS),
     false = bitcask_fileops:is_file(HintFile),
-    100 = bitcask_fileops:fold_keys(FS2, fun(_, _, _, Acc) -> Acc + 1 end,
-                                    0),
+    ?assertEqual(100,
+        bitcask_fileops:fold_keys(FS2, fun(_, _, _, Acc) -> Acc + 1 end, 0)),
     ok.
 
-truncated_hintfile_test() ->
+test_truncated_hintfile() ->
     {FS, HintFile} = setup_hintfile(),
     truncate_file(HintFile, {eof, -(?CRCSIZEFIELD + 8)}),
 
@@ -3143,9 +3160,46 @@ truncated_hintfile_test() ->
     %% correct result from data file.
     #filestate{hintfd = undefined, hintcrc = 0} = FS2 = bitcask:validate_or_delete_hintfile(FS),
     false = bitcask_fileops:is_file(HintFile),
-    100 = bitcask_fileops:fold_keys(FS2, fun(_, _, _, Acc) -> Acc + 1 end,
-                                    0),
+    ?assertEqual(100,
+        bitcask_fileops:fold_keys(FS2, fun(_, _, _, Acc) -> Acc + 1 end, 0)),
     ok.
+
+%% Ensures valid hintfiles are not marked as invalid due to improper chunking
+test_ensure_valid_through_chunks() ->
+    Dir = setup_testfolder("bc.test.valid_through_chunks"),
+    B1 = bitcask:open(Dir, [read_write]),
+    {BytesWritten, NumWritten} = write_until_hint_bytes(B1, ?CHUNK_SIZE * 10),
+    ?assert(BytesWritten > ?CHUNK_SIZE - ?HINT_RECORD_SZ),
+    State = get_state(B1),
+    FS = State#bc_state.write_file,
+    ok = bitcask:close(B1),
+    [HintFile|_] = filelib:wildcard(Dir ++ "/*.hint"),
+
+    %% Reads and validates hintfile
+    #filestate{hintfd = HintFD, hintcrc = HintCRC} = FS1 = bitcask:validate_or_delete_hintfile(FS),
+    ?assertNot(HintFD == undefined),
+    ?assert(HintCRC > 0),
+    ?assertEqual(NumWritten, bitcask_fileops:fold_keys(FS, fun(_, _, _, Acc) -> Acc + 1 end, 0)),
+    ?assert(bitcask_fileops:is_file(HintFile)),
+    {FS1, HintFile}.
+
+write_until_hint_bytes(B1, MaxBytes) ->
+    write_until_hint_bytes_loop(B1, MaxBytes, {0, 0}).
+
+write_until_hint_bytes_loop(B1, MaxBytes, {BytesWritten, NumWritten} = Acc) ->
+    Key = iolist_to_binary(["k", integer_to_binary(NumWritten)]),
+    NewBytes = BytesWritten + byte_size(Key) + ?HINT_RECORD_SZ,
+    case NewBytes > MaxBytes of
+        true ->
+            Acc;
+        false ->
+            case bitcask:put(B1, Key, <<NumWritten:32>>) of
+                ok ->
+                    write_until_hint_bytes_loop(B1, MaxBytes, {NewBytes, NumWritten + 1});
+                Error ->
+                    Error
+            end
+    end.
 
 trailing_junk_big_datafile_test_() ->
     {timeout, 60, fun trailing_junk_big_datafile_test2/0}.
@@ -3429,6 +3483,63 @@ freeze_close_reopen() ->
         catch bitcask:close(B),
         os:cmd("rm -rf " ++ Cask)
     end.
+
+fold_file_failure_test_() ->
+    [{timeout, 60, fun test_fold_file_failure/0},
+     {timeout, 60, fun test_fold_file_missing/0}].
+
+test_fold_file_failure() ->
+    Dir = setup_testfolder("bc.fold_file_failure"),
+    B1 = bitcask:open(Dir, [read_write, {max_file_size, 100}]),
+    [ok = bitcask:put(B1, <<"k">>, <<X:32>>) || X <- lists:seq(1, 100)],
+    ok = bitcask:close(B1),
+
+    [_, TargetFile |_] = filelib:wildcard(Dir ++ "/*.data"),
+
+    B2 = bitcask:open(Dir, [read_write, {max_file_size, 100}]),
+
+    meck:new(bitcask_io, [passthrough]),
+    meck:expect(bitcask_io, file_open,
+                fun(Filename, Opts) ->
+                    case Filename =:= TargetFile of
+                        true ->
+                            {error, eacces};
+                        false ->
+                            meck:passthrough([Filename, Opts])
+                    end
+                end),
+    {error,max_retries_exceeded_for_fold} = bitcask:fold(B2, fun(K, _V, Acc0) -> [K|Acc0] end, [], -1, -1, true),
+    meck:unload(bitcask_io).
+
+%% In cases where a data file is missing, Bitcask will skip it during fold.
+test_fold_file_missing() ->
+    Dir = setup_testfolder("bc.fold_file_missinig"),
+    B1 = bitcask:open(Dir, [read_write, {max_file_size, 100}]),
+    [ok = bitcask:put(B1, <<"k", X:32>>, <<X:32>>) || X <- lists:seq(1, 100)],
+    ok = bitcask:close(B1),
+
+    [_, TargetFile |_] = filelib:wildcard(Dir ++ "/*.data"),
+
+    B2 = bitcask:open(Dir, [read_write, {max_file_size, 100}]),
+
+    PreError = bitcask:fold(B2,
+        fun(K, _V, Acc0) -> [K|Acc0] end, [], -1, -1, true),
+    ?assertEqual(length(PreError), 100),
+    meck:new(bitcask_io, [passthrough]),
+    meck:expect(bitcask_io, file_open,
+                fun(Filename, Opts) ->
+                    case Filename =:= TargetFile of
+                        true ->
+                            {error, enoent};
+                        false ->
+                            meck:passthrough([Filename, Opts])
+                    end
+                end),
+    PostError = bitcask:fold(B2,
+        fun(K, _V, Acc0) -> [K|Acc0] end, [], -1, -1, true),
+    ?assertEqual(length(PostError), 96),
+    meck:unload(bitcask_io),
+    bitcask:close(B2).
 
 fold_itercount_test_() ->
     {timeout, 60, fun fold_itercount_test2/0}.
@@ -3912,20 +4023,58 @@ update_tombstones_test() ->
     TombCount = bitcask:subfold(CountF, Fds, 0),
     ?assertEqual(1, TombCount).
 
-make_merge_file(Dir, Probability) ->
-    case filelib:is_dir(Dir) of
-        true ->
-            DataFiles = filelib:wildcard("*.data", Dir),
-            {ok, FH} = file:open(Dir ++ "/merge.txt", [write,raw]),
-            [case rand:uniform(100) < Probability of
-                 true ->
-                     file:write(FH, io_lib:format("~s\n", [DF]));
-                 false ->
-                     ok
-             end || DF <- DataFiles],
-            ok = file:close(FH);
-        false ->
-            ok
-    end.
+un_write_test_() ->
+    [{timeout, 120, fun test_un_write_merge_race/0}].
+
+%% When an object is "put" it's first written to the data file then updated
+%% in the keydir. In between these two actions, another process may update
+%% the key in keydir with a later file. This is typically due to a merge.
+%%
+%% When this occurs, we unwrite the "put" from the file because we no longer
+%% need it.
+test_un_write_merge_race() ->
+    meck:new(bitcask_fileops, [passthrough]),
+
+    UnWriteCalled = counters:new(1, []),
+    meck:expect(bitcask_fileops, un_write,
+            fun(FS) ->
+                counters:add(UnWriteCalled, 1, 1),
+                meck:passthrough([FS])
+            end),
+
+    Dir = setup_testfolder("bc.test.un_write_race"),
+    TestPid = self(),
+    NumKeys = 10,
+
+    B1 = bitcask:open(Dir, [read_write, {max_file_size, 500}]),
+    [ok = bitcask:put(B1, <<N:32>>, <<"initial">>) || N <- lists:seq(1, NumKeys)],
+    bitcask:close(B1),
+
+    B2 = bitcask:open(Dir, [read_write, {max_file_size, 1000}]),
+
+    spawn(fun() ->
+        ok = bitcask:merge(Dir),
+        TestPid ! merge_done
+    end),
+
+    [ok = bitcask:put(B2, <<N:32>>, <<"race_update">>)
+        || N <- lists:seq(1, NumKeys)],
+
+    [?assertEqual({ok, <<"race_update">>}, bitcask:get(B2, <<N:32>>))
+        || N <- lists:seq(1, NumKeys)],
+
+    receive
+        merge_done -> ok
+    after 10000 ->
+        throw(merge_timeout)
+    end,
+
+    ?assert(counters:get(UnWriteCalled, 1) > 0),
+
+    [begin
+        ?assertEqual({ok, <<"race_update">>}, bitcask:get(B2, <<N:32>>))
+    end || N <- lists:seq(1, NumKeys)],
+    bitcask:close(B2),
+    meck:unload(bitcask_fileops).
 
 -endif. % TEST
