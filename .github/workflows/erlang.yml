@@ -1,12 +1,6 @@
 name: Erlang CI
 
-on:
-  pull_request:
-    branches:
-      - '**'
-  push:
-    branches-ignore:
-      - '**/**'
+on: [push, pull_request]
 
 jobs:
   build:
@@ -18,7 +12,14 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
         otp: ['24', '26']
-        rebar: ['3.20', '3.22']
+        rebar: ['3.22', '3.24']
+        exclude:
+          - otp: '24'
+            os: macos-latest
+          - rebar: '3.24'
+            otp: '24'
+          - rebar: '3.22'
+            otp: '26'
 
     steps:
       - uses: actions/checkout@v4

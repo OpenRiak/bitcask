@@ -3,7 +3,7 @@
 %%! -pz ../bitcask
 %%
 %% Bitcask Torture Tests
-%% 
+%%
 %% Pre-populates a bitcask with a known range of keys, the value for
 %% each key stores the key itself and a sequence number for the write
 %% (initially 1).
@@ -43,7 +43,7 @@
 %%   needs_merge_freq - writer thread calls needs_merge after needs_merge_freq
 %%                      writes to ensure files are closed after merges.
 %%                      Default 1000.
-%%   
+%%
 %%   frag_merge_trigger - bitcask app env variables - set before running
 %%   dead_bytes_merge_trigger
 %%   frag_threshold
@@ -53,7 +53,7 @@
 %%
 
 -module(bctt).
--compile([export_all]).
+-compile([export_all, nowarn_export_all]).
 -include_lib("bitcask/include/bitcask.hrl").
 -record(state, {seq = 0,
                 reader_reps=0,
@@ -86,7 +86,7 @@
 %% Function to run from inside beam
 test() ->
     test([]).
-    
+
 test(Opts) ->
     {ok, State} = process_args(Opts, #state{}),
     print_params(State),
@@ -148,7 +148,7 @@ do_test(State0) ->
     start_folders(State, State#state.folders),
     start_fold_keys(State, State#state.foldkeys),
     schedule_status(State),
-    case State#state.duration of 
+    case State#state.duration of
         undefined ->
             self() ! stop;
         Duration ->
@@ -157,12 +157,12 @@ do_test(State0) ->
     io:format("Starting test.\n"),
     EndState = restart_procs(State),
     stop_writer(EndState),
-    wait_for_procs(EndState).   
+    wait_for_procs(EndState).
 
 restart_procs(State) ->
-    receive 
-        Msg ->
-            ok
+    Msg = receive
+        M ->
+            M
     end,
     try
         case Msg of
@@ -171,7 +171,7 @@ restart_procs(State) ->
                 State;
             status ->
                 io:format("Writer seq: ~p  Readers=~p Folders=~p FoldKeys=~p Merges=~p MergesPending=~p\n",
-                          [State#state.seq, State#state.reader_reps, 
+                          [State#state.seq, State#state.reader_reps,
                            State#state.folder_reps, State#state.fold_keys_reps,
                            State#state.merger_reps, State#state.merges_pending]),
                 schedule_status(State),
@@ -218,7 +218,7 @@ restart_procs(State) ->
             io:format("restart_proc: ~p ~p\nMsg: ~p\nState: ~p\n", [What, Err, Msg, State]),
             State
     end.
-                
+
 %% Wait for the initial writer to complete - the os:cmd call
 %% can generate an EXIT message
 wait_for_writer(State) ->
@@ -266,13 +266,13 @@ wait_for_procs(State) ->
     end.
 
 schedule_status(State) ->
-    case State#state.status_freq of 
+    case State#state.status_freq of
         undefined ->
             ok;
         StatusFreq ->
             timer:send_after(StatusFreq, self(), status)
     end.
-            
+
 start_writer(State) ->
     Caller = self(),
     Pid = proc_lib:spawn_link(fun() ->
@@ -286,7 +286,7 @@ start_writer(State) ->
 
 writer_opts(State) ->
     lists:flatten([
-                   [read_write], 
+                   [read_write],
                    case State#state.max_file_size of
                        Size when is_integer(Size), Size > 0->
                            [{max_file_size, Size}];
@@ -304,7 +304,7 @@ start_readers(_State, 0) ->
     ok;
 start_readers(State, NumReaders) ->
     Caller = self(),
-    spawn_worker(reader, 
+    spawn_worker(reader,
                  fun() ->
                          read_proc(State#state.cask, State#state.num_keys, Caller)
                  end),
@@ -314,7 +314,7 @@ start_folders(_State, 0) ->
     ok;
 start_folders(State, NumFolders) ->
     Caller = self(),
-    spawn_worker(folder, 
+    spawn_worker(folder,
                  fun() ->
                          fold_proc(State#state.cask, State#state.num_keys,
                                    Caller)
@@ -348,12 +348,12 @@ spawn_worker(Type, Fun) ->
                                Fun()
                            catch
                                _:Err ->
-                                   io:format("~p CRASHED ~p: ~p\n", 
+                                   io:format("~p CRASHED ~p: ~p\n",
                                              [Type, self(), Err]),
                                    throw(Err)
                            end
                    end).
-                              
+
 
 kick_writer(State) ->
     State#state.writer_pid ! {start, State#state.seq + 1, State#state.num_keys,
@@ -371,7 +371,7 @@ stop_writer(State) ->
         60000 ->
             erlang:error({writer_pid_timeout, State#state.writer_pid})
     end.
-        
+
 
 write_proc(Ref, Caller) ->
     receive
@@ -409,7 +409,8 @@ write(Ref, Key, Seq, NeedsMergeFreq, Caller) ->
             io:format(user, "NeedsMerge ~p: ~p\n", [Key, Err1])
     end,
     try
-        ok = bitcask:put(Ref, <<Key:32>>, term_to_binary({Key, Seq}))
+        Val = Meta = term_to_binary({Key, Seq}),
+        ok = bitcask:put(Ref, <<Key:32>>, Val, Meta)
     catch
         _:Err2 ->
             io:format(user, "Put ~p: ~p\n", [Key, Err2])
@@ -428,8 +429,8 @@ read(_Ref, 0, _MinSeq) ->
     ok;
 read(Ref, Key, MinSeq) ->
     try
-        {ok, Bin} = bitcask:get(Ref, <<Key:32>>),
-        {Key, Seq} = binary_to_term(Bin),
+        {ok, {Val, _Meta}} = bitcask:get(Ref, <<Key:32>>),
+        {Key, Seq} = binary_to_term(Val),
         case Seq >= MinSeq of
             true ->
                 ok;
@@ -441,7 +442,7 @@ read(Ref, Key, MinSeq) ->
             io:format(user, "Get ~p: ~p\n", [Key, Err])
     end,
     read(Ref, Key - 1, MinSeq).
-   
+
 fold_proc(Cask, NumKeys, Caller) ->
     Ref = bitcask:open(Cask),
     fold(Ref, NumKeys),
@@ -453,7 +454,7 @@ fold(Ref, NumKeys) ->
     Folder = fun(<<Key:32>>, Bin, Keys) ->
                      %% Lookup minium sequence on first pass through
                       {Key, Seq} = binary_to_term(Bin),
-                     case Seq >= MinSeq of 
+                     case Seq >= MinSeq of
                          true ->
                              ok;
                          _ ->
@@ -488,7 +489,7 @@ check_fold(Key, MaxKey, [Key | Rest]) ->
     check_fold(Key + 1, MaxKey, Rest);
 check_fold(Key1, _MaxKey, [_Key2 | _Rest]) ->
     io:format("Fold missing key ~p (stopping searching)\n", [Key1]).
-    
+
 
 
 merge_proc(Cask, Caller) ->
@@ -513,8 +514,7 @@ ensure_bitcask() ->
         {module, bitcask} ->
             ok;
         _ ->
-            {ok, Cwd} = file:get_cwd(),
-            find_bitcask(filename:split(Cwd))
+            find_bitcask(filename:split("_build/default/lib/bitcask"))
     end.
 
 %% Look for bitcask.beam in Cwd and Cwd/ebin
@@ -532,7 +532,7 @@ find_bitcask(Cwd) ->
                     find_bitcask(parent_dir(Cwd))
             end
     end.
-         
+
 try_bitcask_dir(Dir) ->
     CodeDir = filename:join(Dir),
     Beam = bitcask_beam(CodeDir),
@@ -559,7 +559,7 @@ ensure_deps() ->
                         code:add_pathz(DepDir)
                 end,
     lists:foreach(AddDepDir, Deps).
-                  
+
 parent_dir([]) ->
     ["/"];
 parent_dir(["/"]) ->
@@ -634,24 +634,21 @@ process_arg({Name, Val}, State) ->
 parse_arg([$- | Arg]) -> % strip leading --'s
     parse_arg(Arg);
 parse_arg(Arg) ->
-    case string:tokens(Arg, "=") of
-        [NameStr] ->
-            Val = undefined;
-        [NameStr, Val] ->
-            ok;
+    {NameStr, Val} = case string:tokens(Arg, "=") of
+        [N1] ->
+            {N1, undefined};
+        [N2, V] ->
+            {N2, V};
         _ ->
-            NameStr = Val = undefined,
             erlang:error({badarg, Arg})
     end,
     case catch list_to_existing_atom(NameStr) of
         {'EXIT', {badarg, _}} ->
-            Name = undefined,
             erlang:error({badarg, NameStr});
         Name ->
-            ok
-    end,
-    {Name, Val}.
-    
+            {Name, Val}
+    end.
+
 
 get_state_index(Name) ->
     get_state_index(Name, 2, record_info(fields, state)). % first element is 'state'
@@ -688,7 +685,7 @@ format_timeout(undefined) ->
     "default";
 format_timeout(Secs) ->
     io_lib:format("~b s", [Secs]).
-    
+
 format_max_file_size(MaxFileSize) when is_integer(MaxFileSize), MaxFileSize > 0 ->
     io_lib:format("~b", [MaxFileSize]);
 format_max_file_size(_) ->

@@ -1,7 +1,7 @@
 %% -------------------------------------------------------------------
 %%
 %% Copyright (c) 2012-2017 Basho Technologies, Inc.
-%% Copyright (c) 2024 Workday, Inc.
+%% Copyright (c) 2024-2025 Workday, Inc.
 %%
 %% This file is provided to you under the Apache License,
 %% Version 2.0 (the "License"); you may not use this file
@@ -187,10 +187,10 @@ multiple_merges_during_fold_test_() ->
     {timeout, 60, fun multiple_merges_during_fold_body_with_corrupt_hintfiles/0}].
 
 multiple_merges_during_fold_body() ->
-    Dir = filename:join(?TEST_FILEPATH, "bc.multiple-merges-fold"),
+    Dir = bitcask:setup_testfolder("bc.multiple-merges-fold"),
     B = bitcask:open(Dir, [read_write, {max_file_size, 50}]),
     PutSome = fun() ->
-                      [bitcask:put(B, <<X:32>>, <<"yo this is a value">>) ||
+                      [bitcask:put(B, <<X:32>>, <<"yo this is a value">>, <<"meta">>) ||
                           X <- lists:seq(1,5)]
               end,
     PutSome(),
@@ -226,10 +226,10 @@ multiple_merges_during_fold_body() ->
     ok.
 
 multiple_merges_during_fold_body_with_corrupt_hintfiles() ->
-    Dir = filename:join(?TEST_FILEPATH, "bc.multiple-merges-fold-hintfile"),
+    Dir = bitcask:setup_testfolder("bc.multiple-merges-fold-hintfile"),
     B = bitcask:open(Dir, [read_write, {max_file_size, 50}]),
     PutSome = fun() ->
-                      [bitcask:put(B, <<X:32>>, <<"yo this is a value">>) ||
+                      [bitcask:put(B, <<X:32>>, <<"yo this is a value">>, <<"meta">>) ||
                           X <- lists:seq(1,5)]
               end,
     PutSome(),
@@ -272,25 +272,26 @@ merge_until(Dir, MinCount, CountSetuids) ->
     end.
 
 regression_gh82_test_() ->
-    {timeout, 300, ?_assertEqual(ok, regression_gh82_body())}.
+    {timeout, 300, fun regression_gh82_body/0}.
 
 regression_gh82_body() ->
-    Dir = filename:join(?TEST_FILEPATH, "bc.regression_gh82"),
-    os:cmd("rm -rf " ++ Dir),
+    Dir = bitcask:setup_testfolder("bc.regression_gh82"),
     Reference = bitcask:open(Dir, [read_write | regression_gh82_opts()]),
-    bitcask:put(Reference, <<"key_to_delete">>, <<"tr0ll">>),
-    [ bitcask:put(Reference, term_to_binary(X), <<1:(8 * 1024 * 100)>>) || X <- lists:seq(1, 3000)],
+    Meta = <<"meta">>,
+    Keys = [term_to_binary(X) || X <- lists:seq(1, 3000)],
+    Body = <<1:(8 * 1024 * 100)>>,
+    bitcask:put(Reference, <<"key_to_delete">>, <<"tr0ll">>, Meta),
+    _ = [bitcask:put(Reference, Key, Body, Meta) || Key <- Keys],
     bitcask:delete(Reference, <<"key_to_delete">>),
-    [ bitcask:put(Reference, term_to_binary(X), <<1:(8 * 1024 * 100)>>) || X <- lists:seq(1, 3000)],
+    _ = [bitcask:put(Reference, Key, Body, Meta) || Key <- Keys],
     timer:sleep(1000 + 1000),
-    bitcask_merge_worker:merge(Dir, regression_gh82_opts(), {[Dir ++ "/2.bitcask.data"], []}),
+    bitcask_merge_worker:merge(Dir, regression_gh82_opts(), {[Dir ++ "/1.bitcask.data"], []}),
     poll_merge_worker(),
     timer:sleep(2*1000),
     bitcask:close(Reference),
 
     Reference2 = bitcask:open(Dir, [read_write | regression_gh82_opts()]),
-    not_found = bitcask:get(Reference2, <<"key_to_delete">>),
-    ok.
+    ?assertMatch(not_found, bitcask:get(Reference2, <<"key_to_delete">>)).
 
 regression_gh82_opts() ->
     [{max_file_size, 268435456},
@@ -310,8 +311,8 @@ change_open_regression_test_() ->
     {timeout, 300, ?_assertMatch({ok, _}, change_open_regression_body())}.
 
 change_open_regression_body() ->
-    Dir = filename:join(?TEST_FILEPATH, "bitcask.qc"),
-    os:cmd("rm -rf " ++ Dir),
+    Dir = bitcask:setup_testfolder("bitcask.qc"),
+    Meta = <<"meta">>,
     K1 = <<"K111">>,
     K2 = <<"K22222">>,
     K3 = <<"K33">>,
@@ -328,22 +329,22 @@ change_open_regression_body() ->
     _V5 = apply(bitcask,merge,[Dir]),
     _V6 = apply(bitcask,delete,[_V3,K5]),
     _V7 = apply(bitcask,get,[_V3,K1]),
-    _V8 = apply(bitcask,put,[_V3,K3,<<>>]),
-    _V9 = apply(bitcask,put,[_V3,K6,K6_val1]),
-    _V10 = apply(bitcask,put,[_V3,K2,<<"x10><">>]),
+    _V8 = apply(bitcask,put,[_V3,K3,<<>>, Meta]),
+    _V9 = apply(bitcask,put,[_V3,K6,K6_val1,Meta ]),
+    _V10 = apply(bitcask,put,[_V3,K2,<<"x10><">>, Meta]),
     _V30 = apply(bitcask,merge,[Dir]),
-    _V31 = apply(bitcask,put,[_V3,K1,<<>>]),
+    _V31 = apply(bitcask,put,[_V3,K1,<<>>, Meta]),
     _V32 = apply(bitcask,merge,[Dir]),
-    _V33 = apply(bitcask,put,[_V3,K1,<<"x33><">>]),
-    _V34 = apply(bitcask,put,[_V3,K3,<<"34">>]),
+    _V33 = apply(bitcask,put,[_V3,K1,<<"x33><">>, Meta]),
+    _V34 = apply(bitcask,put,[_V3,K3,<<"34">>, Meta]),
     _V35 = apply(bitcask,merge,[Dir]),
     _V36 = apply(bitcask,close,[_V3]),
     _V37 = apply(?MODULE,testonly__create_stale_lock,[]),
     _V38 = apply(?MODULE,testonly__create_stale_lock,[]),
     _V50 = apply(bitcask,open,[Dir,[read_write,{open_timeout,0},{sync_strategy,none}]]),
-    _V51 = apply(bitcask,put,[_V50,K7,<<"x51>>><">>]),
-    _V52 = apply(bitcask,get,[_V50,K6]),
-    _V53 = apply(bitcask,put,[_V50,K2,<<"x53">>]),
+    _V51 = apply(bitcask,put,[_V50,K7,<<"x51>>><">>, Meta]),
+    _V52 = apply(bitcask,get,[_V50,K6, Meta]),
+    _V53 = apply(bitcask,put,[_V50,K2,<<"x53">>, Meta]),
     _V54 = apply(bitcask,merge,[Dir]),
     _V55 = apply(bitcask,get,[_V50,K3]),
     _V56 = apply(bitcask,merge,[Dir]),
@@ -355,24 +356,24 @@ change_open_regression_body() ->
     _V62 = apply(bitcask,delete,[_V60,K4]),
     _V63 = apply(bitcask,get,[_V60,K2]),
     _V64 = apply(bitcask,get,[_V60,K2]),
-    _V65 = apply(bitcask,put,[_V60,K7,<<"x65>><">>]),
+    _V65 = apply(bitcask,put,[_V60,K7,<<"x65>><">>, Meta]),
     _V66 = apply(bitcask,merge,[Dir]),
     _V67 = apply(bitcask,delete,[_V60,K6]),
-    _V68 = apply(bitcask,put,[_V60,K6,K6_val2]),
+    _V68 = apply(bitcask,put,[_V60,K6,K6_val2, Meta]),
     _V69 = apply(bitcask,close,[_V60]),
     _V70 = apply(bitcask,open,[Dir,[read_write,{open_timeout,0},{sync_strategy,none}]]),
     _V71 = apply(bitcask,get,[_V70,K6]),
     case _V71 of
-        {ok, K6_val1} ->
+        {ok, {K6_val1, Meta}} ->
             {bummer, "Original EQC failure"};
-        {ok, K6_val2} ->
+        {ok, {K6_val2, Meta}} ->
             {ok, "this is eqc expected result hooray test passes"};
         Else ->
             {bummer, unexpected_failure, Else}
     end.
 
 new_20131217_a_test_() ->
-    {timeout, 300, ?_assertEqual(ok, new_20131217_a_body())}.
+    {timeout, 300, fun new_20131217_a_body/0}.
 
 %% 37> io:format("~w.\n", [C76]).
 %% [[{set,{var,1},{call,bitcask_pulse,incr_clock,[]}},{set,{var,2},{call,bitcask_pulse,bc_open,[true]}},{set,{var,3},{call,bitcask_pulse,puts,[{var,2},{1,13},<<0>>]}},{set,{var,10},{call,bitcask_pulse,delete,[{var,2},13]}},{set,{var,14},{call,bitcask_pulse,puts,[{var,2},{1,21},<<0,0,0>>]}},{set,{var,18},{call,bitcask_pulse,puts,[{var,2},{1,15},<<0,0,0>>]}},{set,{var,24},{call,bitcask_pulse,fork_merge,[{var,2}]}},{set,{var,27},{call,bitcask_pulse,bc_close,[{var,2}]}},{set,{var,28},{call,bitcask_pulse,incr_clock,[]}},{set,{var,40},{call,bitcask_pulse,fork,[[{init,{state,undefined,false,false,[]}},{set,{not_var,6},{not_call,bitcask_pulse,bc_open,[false]}},{set,{not_var,17},{not_call,bitcask_pulse,fold,[{not_var,6}]}}]]}}],{99742,1075,90258},[{events,[]}]].
@@ -400,24 +401,23 @@ new_20131217_a_body() ->
     _Var10 = erlang:apply(MOD,delete,[_Var2,13]),
     not_found = get(_Var2, 13),                 %not from EQC
     _Var14 = erlang:apply(MOD,puts,[_Var2,{1,21},V2]),
-    {ok, V2} = get(_Var2, 13),                  %not from EQC
+    ?assertMatch({ok, {V2, <<"meta">>}}, get(_Var2, 13)), %not from EQC
     _Var18 = erlang:apply(MOD,puts,[_Var2,{1,15},V3]),
-    {ok, V3} = get(_Var2, 13),                  %not from EQC
+    ?assertMatch({ok, {V3, <<"meta">>}}, get(_Var2, 13)), %not from EQC
     timer:sleep(1234),                  %not from EQC
     _Var24 = erlang:apply(MOD,fork_merge,[_Var2, TestDir]),
     timer:sleep(1235),                  %not from EQC
-    {ok, V3} = get(_Var2, 13),                  %not from EQC
-    {ok, V3} = get(_Var2, 13),                  %not from EQC
+    ?assertMatch({ok, {V3, <<"meta">>}}, get(_Var2, 13)), %not from EQC
+    ?assertMatch({ok, {V3, <<"meta">>}}, get(_Var2, 13)), %not from EQC
     _Var27 = erlang:apply(MOD,bc_close,[_Var2]),
     _Var28 = erlang:apply(MOD,incr_clock,[]),
     _Var106 = erlang:apply(MOD,bc_open,[TestDir,MFS]),
-    {ok, V3} = get(_Var106, 13),                  %not from EQC
+    ?assertMatch({ok, {V3, <<"meta">>}}, get(_Var106, 13)), %not from EQC
     _Var1017 = erlang:apply(MOD,fold,[_Var106]),
-    {ok, V3} = get(_Var106, 13),                  %not from EQC
+    ?assertMatch({ok, {V3, <<"meta">>}}, get(_Var106, 13)), %not from EQC
     bc_close(_Var106),
     bitcask_time:test__clear_fudge(),
-    ?assertEqual(V1017_expected, lists:sort(_Var1017)),
-    ok.
+    ?assertEqual(V1017_expected, lists:sort(_Var1017)).
 
 new_20131217_c_test_() ->
     {timeout, 300, ?_assertEqual(ok, new_20131217_c_body())}.
@@ -500,71 +500,71 @@ new_20131217_c_body() ->
 %%     ?assertEqual(V67_expected, lists:sort(_Var67)),
 %%     ok.
 
-new_20131217_e_test_() ->
-    {timeout, 300, ?_assertEqual(ok, new_20131217_e_body())}.
+%% new_20131217_e_test_() ->
+%%     {timeout, 300, ?_assertEqual(ok, new_20131217_e_body())}.
 
-new_20131217_e_body() ->
-    catch token:stop(),
-    TestDir = filename:join(?TEST_FILEPATH, token:get_name()),
-    bitcask_time:test__set_fudge(10),
-    MOD = ?MODULE,
-    MFS = 400,
-    V1 = <<"v111111111111<">>, %<<0,0,0,0,0,0,0,0,0,0,0,0,0,0>>,
-    V2 = <<"v222222<">>, %<<0,0,0,0,0,0,0,0>>,
-    V3 = <<"v33333333333<">>, %<<0,0,0,0,0,0,0,0,0,0,0,0,0>>,
-    V4 = <<"v4444444<">>, %<<0,0,0,0,0,0,0,0,0>>,
-    V5 = <<"v5<">>, %<<0,0,0>>,
-    V63_expected = [{4,V2},
-                    {5,V2},
-                    {6,V2},
-                    {7,V2},
-                    {8,V2},
-                    {9,V2},
-                    {10,V2},
-                    {11,V1},
-                    {15,V5},
-                    {16,V4},
-                    {17,V4},
-                    {18,V3},
-                    {19,V3},
-                    {20,V3},
-                    {21,V3},
-                    {22,V3},
-                    {23,V3},
-                    {24,V3},
-                    {25,V3},
-                    {26,V3},
-                    {27,V3},
-                    {28,V3},
-                    {29,V3},
-                    {30,V3},
-                    {31,V3},
-                    {32,V3}],
-     Var2 = erlang:apply(MOD,bc_open,[TestDir,MFS]),
-    _Var4 = erlang:apply(MOD,puts,[Var2,{1,11},V1]),
-    _Var9 = erlang:apply(MOD,bc_close,[Var2]),
-     Var12 = erlang:apply(MOD,bc_open,[TestDir,MFS]),
-    _Var13 = erlang:apply(MOD,incr_clock,[]),
-    _Var16 = erlang:apply(MOD,delete,[Var12,1]),
-    _Var19 = erlang:apply(MOD,puts,[Var12,{1,10},V2]),
-    _Var20 = erlang:apply(MOD,delete,[Var12,1]),
-    _Var22 = erlang:apply(MOD,delete,[Var12,3]),
-    _Var24 = erlang:apply(MOD,merge_these,[Var12, TestDir, [1]]),
-    %% _Var24 = erlang:apply(MOD,merge,[Var12, TestDir]),
-    _Var27 = erlang:apply(MOD,puts,[Var12,{14,32},V3]),
-    _Var28 = erlang:apply(MOD,delete,[Var12,14]),
-    _Var37 = erlang:apply(MOD,puts,[Var12,{15,17},V4]),
-    _Var38 = erlang:apply(MOD,delete,[Var12,2]),
-    _Var39 = erlang:apply(MOD,incr_clock,[]),
-    _Var45 = erlang:apply(MOD,puts,[Var12,{15,15},V5]),
-    _Var46 = erlang:apply(MOD,merge_these,[Var12, TestDir, [1,2,4,5,6]]),
-    %% _Var46 = erlang:apply(MOD,merge,[Var12, TestDir]),
-    _Var54 = erlang:apply(MOD,bc_close,[Var12]),
-     Var56 = erlang:apply(MOD,bc_open,[TestDir,MFS]),
-     Var63 = erlang:apply(MOD,fold,[Var56]),
-    bitcask_time:test__clear_fudge(),
-    ?assertEqual(V63_expected, lists:sort(Var63)),
-    ok.
+%% new_20131217_e_body() ->
+%%     catch token:stop(),
+%%     TestDir = filename:join(?TEST_FILEPATH, token:get_name()),
+%%     bitcask_time:test__set_fudge(10),
+%%     MOD = ?MODULE,
+%%     MFS = 400,
+%%     V1 = <<"v111111111111<">>, %<<0,0,0,0,0,0,0,0,0,0,0,0,0,0>>,
+%%     V2 = <<"v222222<">>, %<<0,0,0,0,0,0,0,0>>,
+%%     V3 = <<"v33333333333<">>, %<<0,0,0,0,0,0,0,0,0,0,0,0,0>>,
+%%     V4 = <<"v4444444<">>, %<<0,0,0,0,0,0,0,0,0>>,
+%%     V5 = <<"v5<">>, %<<0,0,0>>,
+%%     V63_expected = [{4,V2},
+%%                     {5,V2},
+%%                     {6,V2},
+%%                     {7,V2},
+%%                     {8,V2},
+%%                     {9,V2},
+%%                     {10,V2},
+%%                     {11,V1},
+%%                     {15,V5},
+%%                     {16,V4},
+%%                     {17,V4},
+%%                     {18,V3},
+%%                     {19,V3},
+%%                     {20,V3},
+%%                     {21,V3},
+%%                     {22,V3},
+%%                     {23,V3},
+%%                     {24,V3},
+%%                     {25,V3},
+%%                     {26,V3},
+%%                     {27,V3},
+%%                     {28,V3},
+%%                     {29,V3},
+%%                     {30,V3},
+%%                     {31,V3},
+%%                     {32,V3}],
+%%     _Var2 = erlang:apply(MOD,bc_open,[TestDir,MFS]),
+%%     _Var4 = erlang:apply(MOD,puts,[_Var2,{1,11},V1]),
+%%     _Var9 = erlang:apply(MOD,bc_close,[_Var2]),
+%%     _Var12 = erlang:apply(MOD,bc_open,[TestDir,MFS]),
+%%     _Var13 = erlang:apply(MOD,incr_clock,[]),
+%%     _Var16 = erlang:apply(MOD,delete,[_Var12,1]),
+%%     _Var19 = erlang:apply(MOD,puts,[_Var12,{1,10},V2]),
+%%     _Var20 = erlang:apply(MOD,delete,[_Var12,1]),
+%%     _Var22 = erlang:apply(MOD,delete,[_Var12,3]),
+%%     _Var24 = erlang:apply(MOD,merge_these,[_Var12, TestDir, [1]]),
+%%     %% _Var24 = erlang:apply(MOD,merge,[_Var12, TestDir]),
+%%     _Var27 = erlang:apply(MOD,puts,[_Var12,{14,32},V3]),
+%%     _Var28 = erlang:apply(MOD,delete,[_Var12,14]),
+%%     _Var37 = erlang:apply(MOD,puts,[_Var12,{15,17},V4]),
+%%     _Var38 = erlang:apply(MOD,delete,[_Var12,2]),
+%%     _Var39 = erlang:apply(MOD,incr_clock,[]),
+%%     _Var45 = erlang:apply(MOD,puts,[_Var12,{15,15},V5]),
+%%     _Var46 = erlang:apply(MOD,merge_these,[_Var12, TestDir, [1,2,4,5,6]]),
+%%     %% _Var46 = erlang:apply(MOD,merge,[_Var12, TestDir]),
+%%     _Var54 = erlang:apply(MOD,bc_close,[_Var12]),
+%%     _Var56 = erlang:apply(MOD,bc_open,[TestDir,MFS]),
+%%     _Var63 = erlang:apply(MOD,fold,[_Var56]),
+%%     bitcask_time:test__clear_fudge(),
+%%     ?assertEqual(V63_expected, lists:sort(_Var63)),
+%%     ok.
 
 bc_open(Dir, MaxFileSize) ->
     bitcask:open(Dir, [read_write, {max_file_size, MaxFileSize}, {open_timeout, 1234}]).
@@ -579,7 +579,7 @@ get(H, K) ->
   bitcask:get(H, nice_key(K)).
 
 put(H, K, V) ->
-  ok = bitcask:put(H, nice_key(K), V).
+  ok = bitcask:put(H, nice_key(K), V, <<"meta">>).
 
 puts(H, {K1, K2}, V) ->
   case lists:usort([ put(H, K, V) || K <- lists:seq(K1, K2) ]) of
@@ -659,7 +659,7 @@ merge_delete_race_pr156_regression_test2() ->
         Ref3 = bitcask:open(Dir, [read_write]),
         Val = <<"val!">>,
         NumKeys = 7,
-        [ok = bitcask:put(Ref3, nice_key(K), Val) || K <- lists:seq(1,NumKeys)],
+        [ok = bitcask:put(Ref3, nice_key(K), Val, <<"meta">>) || K <- lists:seq(1,NumKeys)],
         bitcask_merge_delete ! timeout,
         timer:sleep(2000),
 

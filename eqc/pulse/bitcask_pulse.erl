@@ -59,7 +59,7 @@
 %% Number of keys used in the tests
 -define(NUM_KEYS, 50).
 %% max_file_size given to bitcask.
--define(FILE_SIZE, 400).
+-define(FILE_SIZE, 600).
 %% Signal that Bitcask is under test
 -define(BITCASK_TESTING_KEY, bitcask_testing_module).
 %% Max number of forks to run simultaneously.  Too many means huge pauses
@@ -667,54 +667,6 @@ check_fold_keys_result([], []) ->
   true.
 
 %% Presenting command data statistics in a nicer way
-<<<<<<< HEAD:test/bitcask_pulse.erl
-%% TODO: This needs to be re-implemented - nothing matches.
-%% The final catch-all head is the only one that ever matches anything
-%% with current Pulse.
-command_data({set, _, {call, _, merge, _}}, {_S, V}) ->
-    case V of
-        {error, {merge_locked, _, _}} ->
-            {merge, locked};
-        _ ->
-            {merge, V}
-    end;
-command_data({set, _, {call, _, fork_merge, _}}, {_S, V}) ->
-    case V of
-        {'EXIT', _} ->
-            {fork_merge, 'EXIT'};
-        _ ->
-            {fork_merge, V}
-    end;
-command_data({set, _, {call, _, bc_open, _}}, {_S, V}) ->
-    case V of
-        {'EXIT', _} ->
-            {bc_open, 'EXIT'};
-        {error, Err} ->
-            {bc_open, Err};
-        _ when is_reference(V) ->
-            bc_open
-    end;
-command_data({set, _, {call, _, needs_merge, _}}, {_S, V}) ->
-    case V of
-        {true, _} ->
-            {needs_merge, true};
-        false ->
-            {needs_merge, false};
-        Else ->
-            {needs_merge, Else}
-    end;
-command_data({set, _, {call, _, kill, [Pid]}}, {_S, _V}) ->
-    case Pid of
-        bitcask_merge_worker ->
-            {kill, merger};
-        _ ->
-            {kill, reader}
-    end;
-command_data({set, _, {call, _, Fun, _}}, {_S, _V}) ->
-    Fun;
-command_data(C, D) ->
-    {C, D}.
-=======
 command_data({set, _, {call, _, merge, _}}, H) ->
   case eqc_statem:history_result(H) of
     {error, {merge_locked, _, _}} -> {merge, locked};
@@ -744,7 +696,6 @@ command_data({set, _, {call, _, kill, [Pid]}}, _H) ->
   end;
 command_data({set, _, {call, _, Fun, _}}, _H) ->
   Fun.
->>>>>>> 245135e5cd3dddfa7261a10ab0f765b27122551a:eqc/pulse/bitcask_pulse.erl
 
 %% Wait for all forks to return their results
 fork_results(Pids) ->
@@ -796,10 +747,10 @@ gets(H, {Start, End}) ->
 
 put(H, K, V) ->
   ?LOG({put, H, K, V},
-  ?CHECK_HANDLE(H, ok, bitcask:put(H, nice_key(K), V))).
+  ?CHECK_HANDLE(H, ok, bitcask:put(H, nice_key(K), V, <<"meta">>))).
 
 puts(H, {K1, K2}, V) ->
-  case lists:usort([ put(H, K, V) || K <- lists:seq(K1, K2) ]) of
+  case lists:usort([ put(H, K, V, <<"meta">>) || K <- lists:seq(K1, K2) ]) of
     [ok]  -> ok;
     Other -> Other
   end.

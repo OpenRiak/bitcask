@@ -53,26 +53,26 @@ timeshift_test_() ->
 
 timeshift_test2() ->
     try
-        Dirname = filename:join(?TEST_FILEPATH, "bc.timeshift"),
+        Dirname = bitcask:setup_testfolder("bc.timeshift"),
         meck:new(bitcask_time, [passthrough]),
         meck:expect(bitcask_time, tstamp, fun next_tstamp/0),
         set_tstamp(100),
         set_tstamp_step(-1),
 
-        ?cmd("rm -rf " ++ Dirname),
         Bref = bitcask:open(Dirname, [read_write]),
-        ok = bitcask:put(Bref, <<"k1">>, <<"v1">>),
+        ok = bitcask:put(Bref, <<"k1">>, <<"v1">>, <<"meta">>),
         %% Back when the NIF's internal puts depended on timestamps, this
         %% second put would fail because we've meck'ed time to go backward.
         %% Nowadays, this put should succeed.
-        ok = bitcask:put(Bref, <<"k1">>, <<"v2">>),
+        ok = bitcask:put(Bref, <<"k1">>, <<"v2">>, <<"meta">>),
         bitcask:close(Bref),
 
         %% For each of the data files, validate that it has a valid hint file
         Validate = fun(Fname) ->
                            {ok, S} = bitcask_fileops:open_file(Fname),
                            try
-                               ?assertMatch({valid, _}, bitcask_fileops:validate_hintfile(S))
+                               FS1 = bitcask_fileops:maybe_open_hintfile(S, [readonly]),
+                               ?assert(0 < length(bitcask_fileops:collect_keys_from_hintfile(FS1)))
                            after
                                bitcask_fileops:close(S)
                            end
@@ -82,7 +82,7 @@ timeshift_test2() ->
 
         %% In our post-wall-clock timestamp world, verify that we read the newer value.
         Bref2 = bitcask:open(Dirname, [read_write]),
-        {ok, <<"v2">>} = bitcask:get(Bref2, <<"k1">>),
+        ?assertMatch({ok, {<<"v2">>, <<"meta">>}}, bitcask:get(Bref2, <<"k1">>)),
         bitcask:close(Bref2)
 
     after

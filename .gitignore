@@ -61,6 +61,7 @@ tmp/
 
 # ===== Project-specific Elements =====
 
+/bctt.bc/
 /doc/*.html
 /doc/edoc-info
 /doc/erlang.png

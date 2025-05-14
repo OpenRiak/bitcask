@@ -68,7 +68,7 @@ lock_cannot_be_obtained_on_already_locked_file_across_os_process_test() ->
     MonRef = erlang:monitor(process, ExtPid),
     timer:sleep(1000),
     DB = bitcask:open(DbDir, [read_write]),
-    ?assertMatch({error, {error, locked}}, bitcask:put(DB, <<"k">>, <<"v">>)),
+    ?assertMatch({error, {error, locked}}, bitcask:put(DB, <<"k">>, <<"v">>, <<"meta">>)),
     receive
         {'DOWN', MonRef, _Type, _Object, _Info} = _Msg ->
             ?debugFmt("~n= RECEIVE: ~p~n", [_Msg])
@@ -85,7 +85,7 @@ bitcask_locker_vm_main(DbDir) ->
             io:format("ERROR: ~0tp", [Error]);
         DB ->
             %% DB is locked on the first write operation
-            ok = bitcask:put(DB, <<"k">>, <<"v">>),
+            ok = bitcask:put(DB, <<"k">>, <<"v">>, <<"meta">>),
             io:format("~0tp", [os:getpid()]),
             timer:sleep(3000),
             erlang:halt()

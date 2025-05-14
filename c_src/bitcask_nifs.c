@@ -1,7 +1,7 @@
 // -------------------------------------------------------------------
 //
 // Copyright (c) 2010-2017 Basho Technologies, Inc.
-// Copyright (c) 2018-2022 Workday, Inc.
+// Copyright (c) 2018-2025 Workday, Inc.
 //
 // This file is provided to you under the Apache License,
 // Version 2.0 (the "License"); you may not use this file
@@ -98,30 +98,46 @@ static void format_bin(char * buf, size_t buf_size, const unsigned char * bin, s
 
     buf[0] = '\0';
 
-    // TODO: Protect against overriding that buffer yo!
-    if (is_printable)
-    {
-        strcat(buf, "<<\"");
-        av_size -= 3;
-        n = av_size < bin_size ? av_size : bin_size;
-        strncat(buf, (char*)bin, n);
-        strcat(buf, "\">>");
-    }
-    else
-    {
-        strcat(buf, "<<");
-        for (i=0;i<bin_size;++i)
-        {
-            if (i>0)
-            {
-                strcat(buf, ",");
-            }
-            sprintf(cbuf, "%u", bin[i]);
-            strcat(buf, cbuf);
-        }
-        strcat(buf, ">>");
-    }
+    if (is_printable) {
+      int remaining_size = av_size;
 
+      n = snprintf(buf + strlen(buf), remaining_size, "<<\"");
+      if (n >= remaining_size)
+        return;
+      remaining_size -= n;
+      n = remaining_size < bin_size ? remaining_size : bin_size;
+      strncat(buf, (char *)bin, n);
+      remaining_size -= n;
+
+      n = snprintf(buf + strlen(buf), remaining_size, "\">>");
+      if (n >= remaining_size)
+        return;
+    } else {
+      int remaining_size = av_size;
+
+      n = snprintf(buf + strlen(buf), remaining_size, "<<");
+      if (n >= remaining_size)
+        return;
+      remaining_size -= n;
+
+      for (i = 0; i < bin_size; ++i) {
+        if (i > 0) {
+          n = snprintf(buf + strlen(buf), remaining_size, ",");
+          if (n >= remaining_size)
+            return;
+          remaining_size -= n;
+        }
+
+        n = snprintf(buf + strlen(buf), remaining_size, "%u", bin[i]);
+        if (n >= remaining_size)
+          return;
+        remaining_size -= n;
+      }
+
+      n = snprintf(buf + strlen(buf), remaining_size, ">>");
+      if (n >= remaining_size)
+        return;
+    }
 }
 #endif  // BITCASK_DEBUG
 
@@ -140,10 +156,12 @@ typedef struct
 {
     uint32_t file_id;
     uint32_t total_sz;
+    uint32_t meta_sz;
     uint64_t offset;
     uint64_t epoch;
     uint32_t tstamp;
     uint16_t key_sz;
+    char     *meta;
     char     key[0];
 } bitcask_keydir_entry;
 
@@ -169,9 +187,11 @@ struct bitcask_keydir_entry_sib
 {
     uint32_t file_id;
     uint32_t total_sz;
+    uint32_t meta_sz;
     uint64_t offset;
     uint64_t epoch;
     uint32_t tstamp;
+    char     *meta;
     struct bitcask_keydir_entry_sib * next;
 };
 typedef struct bitcask_keydir_entry_sib bitcask_keydir_entry_sib;
@@ -195,11 +215,13 @@ typedef struct
 {
     uint32_t file_id;
     uint32_t total_sz;
+    uint32_t meta_sz;
     uint64_t epoch;
     uint64_t offset;
     uint32_t tstamp;
     uint16_t is_tombstone;
     uint16_t key_sz;
+    char *   meta;
     char *   key;
 } bitcask_keydir_entry_proxy;
 
@@ -378,7 +400,7 @@ static ErlNifFunc nif_funcs[] =
     {"keydir_new", 1, bitcask_nifs_keydir_new1},
     {"maybe_keydir_new", 1, bitcask_nifs_maybe_keydir_new1},
     {"keydir_mark_ready", 1, bitcask_nifs_keydir_mark_ready},
-    {"keydir_put_int", 10, bitcask_nifs_keydir_put_int},
+    {"keydir_put_int", 11, bitcask_nifs_keydir_put_int},
     {"keydir_get_int", 3, bitcask_nifs_keydir_get_int},
     {"keydir_get_epoch", 1, bitcask_nifs_keydir_get_epoch},
     {"keydir_remove", 3, bitcask_nifs_keydir_remove},
@@ -808,10 +830,12 @@ static int proxy_kd_entry_at_epoch(bitcask_keydir_entry* old,
 
         ret->file_id = old->file_id;
         ret->total_sz = old->total_sz;
+        ret->meta_sz = old->meta_sz;
         ret->offset = old->offset;
         ret->tstamp = old->tstamp;
         ret->epoch = old->epoch;
         ret->key_sz = old->key_sz;
+        ret->meta = old->meta;
         ret->key = old->key;
         ret->is_tombstone = is_pending_tombstone(old);
 
@@ -839,11 +863,12 @@ static int proxy_kd_entry_at_epoch(bitcask_keydir_entry* old,
 
     ret->file_id = s->file_id;
     ret->total_sz = s->total_sz;
+    ret->meta_sz = s->meta_sz;
     ret->offset = s->offset;
     ret->tstamp = s->tstamp;
     ret->is_tombstone = is_sib_tombstone(s);
     ret->epoch = s->epoch;
-
+    ret->meta = s->meta;
     ret->key_sz = head->key_sz;
     ret->key = head->key;
 
@@ -927,6 +952,11 @@ static void update_kd_entry_list(bitcask_keydir_entry *old,
 
         new_sib->file_id = new->file_id;
         new_sib->total_sz = new->total_sz;
+        new_sib->meta_sz = new->meta_sz;
+        new_sib->meta = malloc(new->meta_sz);
+
+        memcpy(new_sib->meta, new->meta, new->meta_sz);
+
         new_sib->offset = new->offset;
         new_sib->epoch = new->epoch;
         new_sib->tstamp = new->tstamp;
@@ -934,9 +964,12 @@ static void update_kd_entry_list(bitcask_keydir_entry *old,
     else // otherwise make a new sib
     {
         new_sib = malloc(sizeof(bitcask_keydir_entry_sib));
+        new_sib->meta = malloc(new->meta_sz);
+        memcpy(new_sib->meta, new->meta, new->meta_sz);
 
         new_sib->file_id = new->file_id;
         new_sib->total_sz = new->total_sz;
+        new_sib->meta_sz = new->meta_sz;
         new_sib->offset = new->offset;
         new_sib->epoch = new->epoch;
         new_sib->tstamp = new->tstamp;
@@ -960,17 +993,53 @@ static bitcask_keydir_entry* new_kd_entry_list(bitcask_keydir_entry *old,
     ret->key_sz = old->key_sz;
     ret->sibs = new_sib;
 
-    //make new sib
+    if (new->meta == NULL || new->meta_sz == 0) { // new is a tombstone
+        new_sib->meta_sz = 0;
+        new_sib->meta = NULL;
+    } else {
+        new_sib->meta_sz = new->meta_sz;
+        new_sib->meta = malloc(new->meta_sz);
+        if (new_sib->meta == NULL) {
+            fprintf(stderr, "Error: malloc failed for new_sib->meta\n");
+            free(ret);
+            free(old_sib);
+            free(new_sib);
+            return NULL;
+        }
+
+        memcpy(new_sib->meta, new->meta, new->meta_sz);
+    }
+
     new_sib->file_id = new->file_id;
     new_sib->total_sz = new->total_sz;
+    new_sib->meta_sz = new->meta_sz;
     new_sib->offset = new->offset;
     new_sib->epoch = new->epoch;
     new_sib->tstamp = new->tstamp;
     new_sib->next = old_sib;
 
-    //make new sib
+    if (old->meta == NULL || old->meta_sz == 0) {
+        old_sib->meta_sz = 0;
+        old_sib->meta = NULL;
+    } else {
+        old_sib->meta_sz = old->meta_sz;
+        old_sib->meta = malloc(old->meta_sz);
+        if (old_sib->meta == NULL) {
+            fprintf(stderr, "Error: malloc failed for old_sib->meta\n");
+            if (new_sib->meta != NULL) {
+                free(new_sib->meta);
+            }
+            free(ret);
+            free(old_sib);
+            free(new_sib);
+            return NULL;
+        }
+        memcpy(old_sib->meta, old->meta, old->meta_sz);
+    }
+
     old_sib->file_id = old->file_id;
     old_sib->total_sz = old->total_sz;
+    old_sib->meta_sz = old->meta_sz;
     old_sib->offset = old->offset;
     old_sib->epoch = old->epoch;
     old_sib->tstamp = old->tstamp;
@@ -1011,8 +1080,8 @@ static void print_entry(bitcask_keydir_entry * e)
         return;
     }
 
-    fprintf(stderr, "entry %p key: %d keylen %d\r\n",
-            e, (int)e->key[3], e->key_sz);
+    fprintf(stderr, "entry %p key: %s keylen %d\r\n",
+            e, e->key, e->key_sz);
 
     fprintf(stderr, "\r\n\t%u\t\t%u\r\n\t%llu\t\t%u\tepoch=%llu\r\n\r\n",
             e->file_id, e->total_sz, e->offset, e->tstamp, e->epoch);
@@ -1071,6 +1140,9 @@ static void free_entry_list(bitcask_keydir_entry* e)
         temp = s;
         s = s->next;
 
+        if (temp->meta != NULL) {
+            free(temp->meta);
+        }
         free(temp);
     }
 
@@ -1085,6 +1157,9 @@ static void free_entry(bitcask_keydir_entry *e)
     }
     else
     {
+        if (e->meta != NULL) {
+            free(e->meta);
+        }
         free(e);
     }
 }
@@ -1099,10 +1174,14 @@ static bitcask_keydir_entry* add_entry(bitcask_keydir* keydir,
                                              entry->key_sz);
     new_entry->file_id = entry->file_id;
     new_entry->total_sz = entry->total_sz;
+    new_entry->meta_sz = entry->meta_sz;
     new_entry->offset = entry->offset;
     new_entry->epoch = entry->epoch;
     new_entry->tstamp = entry->tstamp;
     new_entry->key_sz = entry->key_sz;
+
+    new_entry->meta = malloc(entry->meta_sz);
+    memcpy(new_entry->meta, entry->meta, entry->meta_sz);
     memcpy(new_entry->key, entry->key, entry->key_sz);
     kh_put_set(entries, hash, new_entry);
 
@@ -1115,6 +1194,9 @@ static void update_regular_entry(bitcask_keydir_entry* cur_entry,
 {
     cur_entry->file_id = upd_entry->file_id;
     cur_entry->total_sz = upd_entry->total_sz;
+    cur_entry->meta_sz = upd_entry->meta_sz;
+    cur_entry->meta = realloc(cur_entry->meta, upd_entry->meta_sz);
+    memcpy(cur_entry->meta, upd_entry->meta, upd_entry->meta_sz);
     cur_entry->epoch = upd_entry->epoch;
     cur_entry->offset = upd_entry->offset;
     cur_entry->tstamp = upd_entry->tstamp;
@@ -1160,10 +1242,14 @@ static void update_entry(bitcask_keydir* keydir,
                        h->key_sz);
             new_entry->file_id = upd_entry->file_id;
             new_entry->total_sz = upd_entry->total_sz;
+            new_entry->meta_sz = upd_entry->meta_sz;
             new_entry->offset = upd_entry->offset;
             new_entry->epoch = upd_entry->epoch;
             new_entry->tstamp = upd_entry->tstamp;
             new_entry->key_sz = h->key_sz;
+
+            new_entry->meta = malloc(upd_entry->meta_sz);
+            memcpy(new_entry->meta, upd_entry->meta, upd_entry->meta_sz);
             memcpy(new_entry->key, h->key, h->key_sz);
             kh_key(keydir->entries, itr) = new_entry;
 
@@ -1186,7 +1272,7 @@ static void remove_entry(bitcask_keydir* keydir, khiter_t itr)
 
 static void perhaps_sweep_siblings(bitcask_keydir* keydir)
 {
-    int i;
+    int i = 100000;
     bitcask_keydir_entry* current_entry;
     bitcask_keydir_entry_proxy proxy;
     struct timeval target, now;
@@ -1260,6 +1346,8 @@ static void set_entry_tombstone(bitcask_keydir* keydir, khiter_t itr,
     tombstone.epoch = remove_epoch;
     tombstone.offset = MAX_OFFSET;
     tombstone.total_sz = MAX_SIZE;
+    tombstone.meta_sz = 0;
+    tombstone.meta = NULL;
     tombstone.file_id = MAX_FILE_ID;
     tombstone.key_sz = 0;
 
@@ -1268,6 +1356,8 @@ static void set_entry_tombstone(bitcask_keydir* keydir, khiter_t itr,
     {
         // update into an entry list
         bitcask_keydir_entry* new_entry_list;
+        //DEBUG_ENTRY(entry);
+
         new_entry_list = new_kd_entry_list(entry, &tombstone);
         kh_key(keydir->entries, itr) = new_entry_list;
         free(entry);
@@ -1317,6 +1407,7 @@ ERL_NIF_TERM bitcask_nifs_keydir_put_int(ErlNifEnv* env, int argc, const ERL_NIF
     bitcask_keydir_handle* handle;
     bitcask_keydir_entry_proxy entry;
     ErlNifBinary key;
+    ErlNifBinary meta;
     uint32_t nowsec;
     uint32_t newest_put;
     uint32_t old_file_id;
@@ -1324,25 +1415,30 @@ ERL_NIF_TERM bitcask_nifs_keydir_put_int(ErlNifEnv* env, int argc, const ERL_NIF
 
     if (enif_get_resource(env, argv[0], bitcask_keydir_RESOURCE, (void**)&handle) &&
         enif_inspect_binary(env, argv[1], &key) &&
-        enif_get_uint(env, argv[2], &(entry.file_id)) &&
-        enif_get_uint(env, argv[3], &(entry.total_sz)) &&
-        enif_get_uint64_bin(env, argv[4], &(entry.offset)) &&
-        enif_get_uint(env, argv[5], &(entry.tstamp)) &&
-        enif_get_uint(env, argv[6], &(nowsec)) &&
-        enif_get_uint(env, argv[7], &(newest_put)) &&
-        enif_get_uint(env, argv[8], &(old_file_id)) &&
-        enif_get_uint64_bin(env, argv[9], &(old_offset)))
+        enif_inspect_binary(env, argv[2], &meta) &&
+        enif_get_uint(env, argv[3], &(entry.file_id)) &&
+        enif_get_uint(env, argv[4], &(entry.total_sz)) &&
+        enif_get_uint64_bin(env, argv[5], &(entry.offset)) &&
+        enif_get_uint(env, argv[6], &(entry.tstamp)) &&
+        enif_get_uint(env, argv[7], &(nowsec)) &&
+        enif_get_uint(env, argv[8], &(newest_put)) &&
+        enif_get_uint(env, argv[9], &(old_file_id)) &&
+        enif_get_uint64_bin(env, argv[10], &(old_offset)))
     {
         bitcask_keydir* keydir = handle->keydir;
         entry.key = (char*)key.data;
+        entry.meta = (char*)meta.data;
+
+        entry.meta_sz = meta.size;
         entry.key_sz = key.size;
 
         LOCK(keydir);
         DEBUG2("LINE %d put\r\n", __LINE__);
 
+        DEBUG_BIN(dbgMeta, meta.data, meta.size);
         DEBUG_BIN(dbgKey, key.data, key.size);
-        DEBUG("+++ Put key = %s file_id=%d offset=%d total_sz=%d tstamp=%u old_file_id=%d\r\n",
-                dbgKey,
+        DEBUG("+++ Put key = %s / meta = %s file_id=%d offset=%d total_sz=%d tstamp=%u old_file_id=%d\r\n",
+              dbgKey, dbgMeta,
               (int) entry.file_id, (int) entry.offset,
               (int)entry.total_sz, (unsigned) entry.tstamp, (int)old_file_id);
         DEBUG_KEYDIR(keydir);
@@ -1523,13 +1619,24 @@ ERL_NIF_TERM bitcask_nifs_keydir_get_int(ErlNifEnv* env, int argc, const ERL_NIF
         if (f.found && !f.proxy.is_tombstone)
         {
             ERL_NIF_TERM result;
-            result = enif_make_tuple6(env,
+            ErlNifBinary meta;
+
+            enif_alloc_binary(f.proxy.meta_sz, &meta);
+            memcpy(meta.data, f.proxy.meta, f.proxy.meta_sz);
+
+            DEBUG_BIN(dbgMeta, meta.data, meta.size);
+            DEBUG("+++ Meta %s time = %lu\r\n", dbgMeta, epoch);
+
+            result = enif_make_tuple8(env,
                                       ATOM_BITCASK_ENTRY,
                                       argv[1], /* Key */
+                                      enif_make_binary(env, &meta),
                                       enif_make_uint(env, f.proxy.file_id),
                                       enif_make_uint(env, f.proxy.total_sz),
+                                      enif_make_uint(env, f.proxy.meta_sz),
                                       enif_make_uint64_bin(env, f.proxy.offset),
                                       enif_make_uint(env, f.proxy.tstamp));
+
             DEBUG(" ... returned value file id=%u size=%u ofs=%u tstamp=%u tomb=%u\r\n",
                   f.proxy.file_id, f.proxy.total_sz, f.proxy.offset, f.proxy.tstamp,
                   (unsigned)f.proxy.is_tombstone);
@@ -1692,6 +1799,10 @@ static bitcask_keydir_entry * clone_entry(bitcask_keydir_entry * curr)
             bitcask_keydir_entry_sib * sib =
                 malloc(sizeof(bitcask_keydir_entry_sib));
             memcpy(sib, next_sib, sizeof(bitcask_keydir_entry_sib));
+
+            sib->meta = malloc(next_sib->meta_sz);
+            memcpy(sib->meta, next_sib->meta, next_sib->meta_sz);
+
             *sib_ptr = sib;
             sib_ptr = &sib->next;
             next_sib = next_sib->next;
@@ -1704,7 +1815,12 @@ static bitcask_keydir_entry * clone_entry(bitcask_keydir_entry * curr)
         size_t new_sz = sizeof(bitcask_keydir_entry) + curr->key_sz;
         bitcask_keydir_entry* new = malloc(new_sz);
         memcpy(new, curr, new_sz);
-        return curr;
+        memcpy(new->key, curr->key, curr->key_sz);
+
+        new->meta = malloc(curr->meta_sz);
+        memcpy(new->meta, curr->meta, curr->meta_sz);
+
+        return new;
     }
 }
 
@@ -1719,7 +1835,7 @@ ERL_NIF_TERM bitcask_nifs_keydir_copy(ErlNifEnv* env, int argc, const ERL_NIF_TE
 
         bitcask_keydir_handle* new_handle =
             enif_alloc_resource(bitcask_keydir_RESOURCE, sizeof(bitcask_keydir_handle));
-        memset(handle, '\0', sizeof(bitcask_keydir_handle));
+        memset(new_handle, '\0', sizeof(bitcask_keydir_handle));
 
         // Now allocate the actual keydir instance. Because it's unnamed/shared, we'll
         // leave the name and lock portions null'd out
@@ -1908,6 +2024,7 @@ bitcask_nifs_keydir_itr_next(ErlNifEnv * env, int argc, const ERL_NIF_TERM argv[
                 DEBUG2("LINE %d itr_next\r\n", __LINE__);
                 bitcask_keydir_entry* entry = kh_key(keydir->entries, handle->iterator);
                 ErlNifBinary key;
+                ErlNifBinary meta;
                 bitcask_keydir_entry_proxy proxy;
 
                 if (!proxy_kd_entry_at_epoch(entry, handle->epoch, &proxy)
@@ -1922,7 +2039,8 @@ bitcask_nifs_keydir_itr_next(ErlNifEnv * env, int argc, const ERL_NIF_TERM argv[
                 DEBUG("itr_next key=%s", dbgKey);
 
                 // Alloc the binary and make sure it succeeded
-                if (!enif_alloc_binary(proxy.key_sz, & key))
+                if (!enif_alloc_binary(proxy.key_sz, &key) ||
+                    !enif_alloc_binary(proxy.meta_sz, &meta))
                 {
                     UNLOCK(keydir);
                     return ATOM_ALLOCATION_ERROR;
@@ -1932,11 +2050,15 @@ bitcask_nifs_keydir_itr_next(ErlNifEnv * env, int argc, const ERL_NIF_TERM argv[
                 // TODO: If we maintained a ErlNifBinary in the original entry, could we
                 // get away with not doing a copy here?
                 memcpy(key.data, proxy.key, proxy.key_sz);
-                ERL_NIF_TERM curr = enif_make_tuple6(env,
+                memcpy(meta.data, proxy.meta, proxy.meta_sz);
+
+                ERL_NIF_TERM curr = enif_make_tuple8(env,
                                                      ATOM_BITCASK_ENTRY,
                                                      enif_make_binary(env, &key),
+                                                     enif_make_binary(env, &meta),
                                                      enif_make_uint(env, proxy.file_id),
                                                      enif_make_uint(env, proxy.total_sz),
+                                                     enif_make_uint(env, proxy.meta_sz),
                                                      enif_make_uint64_bin(env, proxy.offset),
                                                      enif_make_uint(env, proxy.tstamp));
 

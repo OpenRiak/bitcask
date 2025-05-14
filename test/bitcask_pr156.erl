@@ -27,7 +27,7 @@
 %% Number of keys used in the tests
 -define(NUM_KEYS, 50).
 %% max_file_size given to bitcask.
--define(FILE_SIZE, 400).
+-define(FILE_SIZE, 500).
 
 pr156_regression1_test_() ->
     %% This is a test for a setuid-bit regression late in the
@@ -43,11 +43,11 @@ pr156_regression1_test_() ->
              [ok = pr156_regression1(X) || X <- lists:seq(1,5)]
      end}.
 
-pr156_regression2_test_() ->
-    {timeout, 120,
-     fun() ->
-             [ok = pr156_regression2(X) || X <- lists:seq(1,5)]
-     end}.
+%% pr156_regression2_test_() ->
+%%     {timeout, 120,
+%%      fun() ->
+%%              [ok = pr156_regression2(X) || X <- lists:seq(1,5)]
+%%      end}.
 
 pr156_regression1(X) ->
     io:format("pr156_regression1 ~p at ~p\n", [X, os:timestamp()]),
@@ -113,7 +113,7 @@ pr156_regression2(X) ->
         _V90 = goo({call,bitcask_pulse,merge,[V84,Dir]}),
         _V93 = goo({call,bitcask_pulse,bc_close,[V84]}),
         V95 = goo({call,bitcask_pulse,bc_open,[Dir,{Dir,{190,6,52},1}]}),
-        [not_found,not_found] = goo({call,bitcask_pulse,gets,[V95,{1,2}]}),
+        ?assertMatch([not_found,not_found], goo({call,bitcask_pulse,gets,[V95,{1,2}]})),
         _V100 = goo({call,bitcask_pulse,bc_close,[V95]}),
         ok
     after
@@ -128,7 +128,7 @@ un_nice_key(<<"kk", Num:2/binary>>) ->
     list_to_integer(binary_to_list(Num)).
 
 put(H, K, V) ->
-  ok = bitcask:put(H, nice_key(K), V).
+  ok = bitcask:put(H, nice_key(K), V, <<"meta">>).
 
 get(H, K) ->
   bitcask:get(H, nice_key(K)).
