@@ -1380,15 +1380,18 @@ load_key(FileTstamp, KeyDir, KT, {K0, Meta, Tstamp, {Offset, TotalSz}}) ->
             ?LOG_ERROR("Invalid key on load ~p: ~p",
                        [K0, KeyTxErr]);
         _ ->
-            bitcask_nifs:keydir_put(KeyDir,
-                                    K,
-                                    Meta,
-                                    FileTstamp,
-                                    TotalSz,
-                                    Offset,
-                                    Tstamp,
-                                    bitcask_time:tstamp(),
-                                    false)
+            case bitcask_nifs:keydir_put(KeyDir,
+                                        K,
+                                        Meta,
+                                        FileTstamp,
+                                        TotalSz,
+                                        Offset,
+                                        Tstamp,
+                                        bitcask_time:tstamp(),
+                                        false) of
+                ok -> ok;
+                already_exists -> ok
+            end
     end.
 
 %%
@@ -4347,6 +4350,40 @@ ensure_meta_getter_is_not_called_when_hintfiles_value() ->
     bitcask:close(B2),
     ?assertEqual(0, meck:num_calls(meta_getter_counter, increment, [])),
     meck:unload(meta_getter_counter).
+
+%% This test creates a scenario where the same key appears in multiple
+%% data files with different timestamps
+duplicate_keys_tests_() ->
+    [
+        {timeout, 120, fun load_key_duplicate_test/0}
+    ].
+
+load_key_duplicate_test() ->
+    {ok, KeyDir} = bitcask_nifs:keydir_new(),
+        
+    Key = <<"duplicate_key">>,
+    Meta = <<"meta">>,
+    FileId1 = 1000,
+    FileId2 = 2000,
+    Timestamp1 = 1000,
+    Timestamp2 = 2000, % Newer timestamp
+    Offset = 0,
+    TotalSz = 100,
+    
+    Args1 = {Key, Meta, Timestamp1, {Offset, TotalSz}},
+    Args2 = {Key, Meta, Timestamp2, {Offset, TotalSz}},
+    
+    LoadResultNewer = load_key(FileId2, KeyDir, fun(X) -> X end, Args2),
+    LoadResultOlder = load_key(FileId1, KeyDir, fun(X) -> X end, Args1),
+    
+    %% Both load_key calls should return ok, even if keydir_put returns already_exists
+    ?assertEqual(ok, LoadResultNewer),
+    ?assertEqual(ok, LoadResultOlder),
+    
+    %% Verify we have the latest value
+    Entry = bitcask_nifs:keydir_get(KeyDir, Key),
+    ?assertEqual(FileId2, Entry#bitcask_entry.file_id),
+    ?assertEqual(Timestamp2, Entry#bitcask_entry.tstamp).
 
 ensure_meta_getter_is_called_when_hintfiles_invalid() ->
     Dir = setup_testfolder("bc.meta_getter.valid_hints.folder"),
