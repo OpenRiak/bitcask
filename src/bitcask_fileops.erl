@@ -552,6 +552,7 @@ read_crc(Fd) ->
     case bitcask_io:file_read(Fd, ?HINT_RECORD_SZ) of
         {ok, <<0:?TSTAMPFIELD,
                0:?KEYSIZEFIELD,
+               0:?METASIZEFIELD,
                ExpectCRC:?TOTALSIZEFIELD,
                _TombInt:?TOMBSTONEFIELD_V2,
                (?MAXOFFSET_V2):?OFFSETFIELD_V2>>} ->

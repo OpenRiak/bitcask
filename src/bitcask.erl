@@ -3282,7 +3282,8 @@ hintfile_test_() ->
      {timeout, 60, fun test_missing_hintfile/0},
      {timeout, 60, fun test_corrupt_hintfile/0},
      {timeout, 60, fun test_ensure_valid_through_chunks/0},
-     {timeout, 60, fun test_put_with_missing_hintfile/0}
+     {timeout, 60, fun test_put_with_missing_hintfile/0},
+     {timeout, 60, fun test_read_crc_with_metadata/0}
     ].
 
 setup_hintfile(Name) ->
@@ -3392,6 +3393,26 @@ test_put_with_missing_hintfile() ->
     [ok = bitcask:put(B1, <<"p", X>>, <<"m">>, <<X:32>>) || X <- lists:seq(1, 100)],
     ?assertEqual(100 + length(Objects), bitcask:fold_keys(B1, fun(_, Acc) -> Acc + 1 end, 0)),
     meck:unload(meta_getter_counter),
+    bitcask:close(B1).
+
+%% Test that read_crc works correctly with hint files containing metadata
+test_read_crc_with_metadata() ->
+    {Dir, FS, HintFile, _Objects, MetaGetter} = setup_hintfile("read_crc_meta"),
+
+    ?assert(bitcask_fileops:is_file(HintFile)),
+
+    bitcask_fileops:close_hintfile(FS),
+    case bitcask_fileops:open_file(bitcask_fileops:filename(FS), append) of
+        {ok, FS2} ->
+            %% CRC is read, if hintfd is undefined then it failed.
+            ?assertNotEqual(undefined, FS2#filestate.hintfd),
+            bitcask_fileops:close_hintfile(FS2);
+        {error, enoent} ->
+            ?assert(false, "Hintfile was deleted due to CRC read failure - this indicates the bug")
+    end,
+
+    meck:unload(meta_getter_counter),
+    B1 = bitcask:open(Dir, [read_write, {meta_getter, MetaGetter}]),
     bitcask:close(B1).
 
 write_until_hint_bytes(B1, MaxBytes) ->
@@ -4360,7 +4381,7 @@ duplicate_keys_tests_() ->
 
 load_key_duplicate_test() ->
     {ok, KeyDir} = bitcask_nifs:keydir_new(),
-        
+
     Key = <<"duplicate_key">>,
     Meta = <<"meta">>,
     FileId1 = 1000,
@@ -4369,17 +4390,17 @@ load_key_duplicate_test() ->
     Timestamp2 = 2000, % Newer timestamp
     Offset = 0,
     TotalSz = 100,
-    
+
     Args1 = {Key, Meta, Timestamp1, {Offset, TotalSz}},
     Args2 = {Key, Meta, Timestamp2, {Offset, TotalSz}},
-    
+
     LoadResultNewer = load_key(FileId2, KeyDir, fun(X) -> X end, Args2),
     LoadResultOlder = load_key(FileId1, KeyDir, fun(X) -> X end, Args1),
-    
+
     %% Both load_key calls should return ok, even if keydir_put returns already_exists
     ?assertEqual(ok, LoadResultNewer),
     ?assertEqual(ok, LoadResultOlder),
-    
+
     %% Verify we have the latest value
     Entry = bitcask_nifs:keydir_get(KeyDir, Key),
     ?assertEqual(FileId2, Entry#bitcask_entry.file_id),
