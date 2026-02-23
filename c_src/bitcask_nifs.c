@@ -187,9 +187,9 @@ typedef struct
 // An entry pointer may be tagged to indicate it really points to an
 // list of entries with different timestamps. Those are created when
 // there are concurrent iterations and updates.
-#define IS_ENTRY_LIST(p) ((uint64_t)p&1)
-#define GET_ENTRY_LIST_POINTER(p) ((bitcask_keydir_entry_head*)((uint64_t)p&(uint64_t)~1))
-#define MAKE_ENTRY_LIST_POINTER(p) ((bitcask_keydir_entry*)((uint64_t)p|(uint64_t)1))
+#define IS_ENTRY_LIST(p) ((uintptr_t)p&1)
+#define GET_ENTRY_LIST_POINTER(p) ((bitcask_keydir_entry_head*)((uintptr_t)p&(uintptr_t)~1))
+#define MAKE_ENTRY_LIST_POINTER(p) ((bitcask_keydir_entry*)((uintptr_t)p|(uintptr_t)1))
 
 // Holds values fetched from a regular entry or a snapshot from an entry list.
 typedef struct
@@ -2494,12 +2494,13 @@ ERL_NIF_TERM bitcask_nifs_file_pwrite(ErlNifEnv* env, int argc, const ERL_NIF_TE
 ERL_NIF_TERM bitcask_nifs_file_read(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
 {
     bitcask_file_handle* handle;
-    size_t count;
+    unsigned long count_ul;
 
     if (enif_get_resource(env, argv[0], bitcask_file_RESOURCE, (void**)&handle) &&
-        enif_get_ulong(env, argv[1], &count))    /* Count */
+        enif_get_ulong(env, argv[1], &count_ul))    /* Count */
     {
         ErlNifBinary bin;
+        size_t count = count_ul;
         if (!enif_alloc_binary(count, &bin))
         {
             return enif_make_tuple2(env, ATOM_ERROR, ATOM_ALLOCATION_ERROR);
